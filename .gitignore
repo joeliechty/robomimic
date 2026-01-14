@@ -130,5 +130,5 @@ playback/*
 
 # exp results
 robomimic/exps/results/*
-
+robomimic/bc_divergence_results/*
 evals/*

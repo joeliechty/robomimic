@@ -129,7 +129,6 @@ class BC(PolicyAlgo):
         # this minimizes the amount of data transferred to GPU
         return TensorUtils.to_float(TensorUtils.to_device(input_batch, self.device))
 
-
     def train_on_batch(self, batch, epoch, validate=False):
         """
         Training on a single batch of data.
@@ -233,6 +232,20 @@ class BC(PolicyAlgo):
                 
                 losses["cdm_loss"] = cdm_loss
                 losses["action_loss"] += self.algo_config.loss.cdm_weight * cdm_loss
+            else:
+                if not hasattr(self, "_warned_div_none"):
+                    print("WARNING: CDM Loss skipped because div_v_t is None (divergence computation failed)")
+                    self._warned_div_none = True
+        else:
+            if not hasattr(self, "_warned_missing_cdm_keys"):
+                missing = []
+                if "divergence" not in batch:
+                    missing.append("divergence")
+                if "score" not in batch:
+                    missing.append("score")
+                print(f"WARNING: CDM Loss skipped because keys missing in batch: {missing}")
+                print(f"         Available batch keys: {list(batch.keys())}")
+                self._warned_missing_cdm_keys = True
         # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
         return losses

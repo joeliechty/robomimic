@@ -15,28 +15,32 @@ def divergence_loss(preds, labels, div_v_t, div_u_t, score_t):
     L_CDM(θ) = E[ |(∇·u_t - ∇·v_t) + (u_t - v_t)·∇log p_t| ]
     
     Args:
-        preds: Prediected flow field sampels (robot actions) [B,D]
-        labels: Target flow field samples (robot actions) [B,D]
+        preds: Prediected flow field sampels (robot actions including gripper command) [B,D]
+        labels: Target flow field samples (robot actions including gripper command) [B,D]
         div_v_t: Divergence of predicted flow field [B]
         div_u_t: Divergence of target flow field [B]
-        score_t: Score function samples [B,D]
+        score_t: Score function samples [B,D-1]
 
     Returns:
         loss (torch.Tensor): divergence loss scalar
     """
+
+    # extract ee pose components from preds and labels
+    pred_twist = preds[..., :-1]  # [B, D-1]
+    label_twist = labels[..., :-1]  # [B, D-1]
     
     # TERM 1: (∇·u_t - ∇·v_t)
     # ---------------------------    
     # Difference of divergences
-    divergence_diff = div_u_t - div_v_t 
+    divergence_diff = div_u_t - div_v_t # [B]
     
     # TERM 2: (u_t - v_t)·∇log p_t
     # ------------------------------
     # Velocity difference
-    velocity_diff = labels - preds  # [batch, dim]
+    velocity_diff = label_twist - pred_twist # [B,D-1]
     
     # Dot product with score (sum over dimensions for each batch)
-    velocity_score_dot = (velocity_diff * score_t).sum(dim=1)  # [batch]
+    velocity_score_dot = (velocity_diff * score_t).sum(dim=1) # [B]
     
     # COMBINED DIVERGENCE LOSS
     # L_CDM = E[ |(∇·u - ∇·v) + (u - v)·score| ]

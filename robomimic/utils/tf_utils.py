@@ -1168,11 +1168,20 @@ def add_twist_to_pose(pose, twist, dt, w_first=True):
     # convert pose to position and quaternion (x, y, z, qw, qx, qy, qz)
     pose, pose_rep = _convert_pose_any_to_pose_quat(pose, w_first=w_first)
 
+    # Convert dt to tensor if it's a scalar (needed for JVP compatibility)
+    if not torch.is_tensor(dt):
+        dt = torch.tensor(dt, dtype=pose.dtype, device=pose.device)
+    
     # Ensure dt has the correct shape [..., 1]
     if dt.dim() == 0:  # scalar tensor
         dt = dt.unsqueeze(-1)
     elif dt.shape[-1] != 1:
         dt = dt.unsqueeze(-1)
+
+    # Broadcast dt to match pose batch dimensions BEFORE checking compatibility
+    if dt.numel() == 1:
+        # If dt is scalar, expand it to match pose batch dimensions + 1 for the trailing dim
+        dt = dt.view(*([1] * (pose.dim() - 1)), 1).expand(*pose.shape[:-1], 1)
 
     # check that twist and pose batch dimensions are compatible
     if pose.shape[:-1] != twist.shape[:-1] or pose.shape[:-1] != dt.shape[:-1] or twist.shape[:-1] != dt.shape[:-1]:

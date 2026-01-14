@@ -604,6 +604,21 @@ def _save_data_structure(data, save_path):
                 if 'divergence' in demo_group:
                     del demo_group['divergence']
                 demo_group.create_dataset('divergence', data=divergence)
+
+                print(f"Saved divergence for demo {demo_key}: shape={divergence.shape}")
+
+            # Add score if it exists
+            if demo_key in data and 'score' in data[demo_key]:
+                score = data[demo_key]['score']
+                if isinstance(score, torch.Tensor):
+                    score = score.cpu().numpy()
+                
+                # Delete if already exists (for overwriting)
+                if 'score' in demo_group:
+                    del demo_group['score']
+                demo_group.create_dataset('score', data=score)
+                
+                print(f"Saved score for demo {demo_key}: shape={score.shape}")
     
     # Reopen the original file for continued use
     data['data'] = h5py.File(original_file, 'r')
@@ -744,6 +759,7 @@ def compute_policy_divergence_during_training(model, batch, n_samples=3):
         
     except (KeyError, ValueError) as e:
         # EE pose keys not in observations, cannot compute divergence
+        print(f"DEBUG: compute_policy_divergence_during_training failed with: {type(e).__name__}: {e}")
         return None
 
 # training data divergence and score estimation
@@ -839,6 +855,131 @@ def add_div_and_score_to_training_data(load_path, save_path=None, verbose=True, 
         print(f"\nSaving updated data structure to: {save_path}")
     _save_data_structure(data, save_path)
     
+def load_and_checkdivergence_and_score(hdf5_path, verbose=True):
+    """
+    Load a dataset and verify that it contains divergence and score data.
+    
+    Args:
+        hdf5_path: str, path to the HDF5 dataset file
+        verbose: bool, whether to print detailed information
+    
+    Returns:
+        dict: {
+            'has_divergence': bool,
+            'has_score': bool,
+            'divergence_demos': list of demo keys with divergence,
+            'score_demos': list of demo keys with score,
+            'divergence_stats': dict with min/mean/max if available,
+            'score_stats': dict with min/mean/max per component if available
+        }
+    """
+    f = h5py.File(hdf5_path, 'r')
+    
+    all_demos = sorted([k for k in f['data'].keys()])
+    
+    divergence_demos = []
+    score_demos = []
+    
+    # Collect all divergence and score values for stats
+    all_divergence = []
+    all_score = []
+    
+    if verbose:
+        print(f"\nChecking dataset: {hdf5_path}")
+        print(f"Total demos: {len(all_demos)}")
+        print("-" * 60)
+    
+    # Check each demo for divergence and score
+    for demo_key in all_demos:
+        demo_group = f['data'][demo_key]
+        
+        has_div = 'divergence' in demo_group
+        has_score = 'score' in demo_group
+        
+        if has_div:
+            divergence_demos.append(demo_key)
+            div_data = demo_group['divergence'][()]
+            all_divergence.append(div_data)
+            
+        if has_score:
+            score_demos.append(demo_key)
+            score_data = demo_group['score'][()]
+            all_score.append(score_data)
+    
+    # Compute statistics
+    has_divergence = len(divergence_demos) > 0
+    has_score = len(score_demos) > 0
+    
+    divergence_stats = None
+    score_stats = None
+    
+    if has_divergence:
+        all_div_concat = np.concatenate(all_divergence)
+        divergence_stats = {
+            'min': float(np.min(all_div_concat)),
+            'mean': float(np.mean(all_div_concat)),
+            'max': float(np.max(all_div_concat)),
+            'count': len(all_div_concat)
+        }
+    
+    if has_score:
+        all_score_concat = np.concatenate(all_score)  # [total_steps, 6]
+        score_stats = {
+            'shape': all_score_concat.shape,
+            'count': len(all_score_concat),
+            'per_component': []
+        }
+        for i in range(all_score_concat.shape[1]):
+            component = all_score_concat[:, i]
+            score_stats['per_component'].append({
+                'min': float(np.min(component)),
+                'mean': float(np.mean(component)),
+                'max': float(np.max(component))
+            })
+    
+    if verbose:
+        print(f"\nDivergence:")
+        if has_divergence:
+            print(f"  ✓ Found in {len(divergence_demos)}/{len(all_demos)} demos")
+            print(f"  Stats: min={divergence_stats['min']:.4f}, "
+                  f"mean={divergence_stats['mean']:.4f}, "
+                  f"max={divergence_stats['max']:.4f}")
+            print(f"  Total values: {divergence_stats['count']}")
+        else:
+            print(f"  ✗ NOT FOUND in any demos")
+        
+        print(f"\nScore:")
+        if has_score:
+            print(f"  ✓ Found in {len(score_demos)}/{len(all_demos)} demos")
+            print(f"  Shape: {score_stats['shape']}")
+            print(f"  Total values: {score_stats['count']}")
+            print(f"  Stats per component:")
+            for i, comp_stats in enumerate(score_stats['per_component']):
+                print(f"    Component {i}: min={comp_stats['min']:.4f}, "
+                      f"mean={comp_stats['mean']:.4f}, "
+                      f"max={comp_stats['max']:.4f}")
+        else:
+            print(f"  ✗ NOT FOUND in any demos")
+        
+        print("-" * 60)
+        
+        if has_divergence and has_score:
+            print("✓ Dataset is READY for CDM training!")
+        else:
+            print("✗ Dataset is MISSING required data for CDM training")
+            print("  Run add_div_and_score_to_training_data() to add missing data")
+    
+    f.close()
+    
+    return {
+        'has_divergence': has_divergence,
+        'has_score': has_score,
+        'divergence_demos': divergence_demos,
+        'score_demos': score_demos,
+        'divergence_stats': divergence_stats,
+        'score_stats': score_stats
+    }
+
 # visualization
 def visualize_observation_trajectories(ee_state_tensor, demo_keys, nan_mask=None, 
                                        divergence=None, phase_tensor=None,
@@ -1698,6 +1839,7 @@ def test_and_visualize(args):
                     comp = valid_score_demo[:, i]
                     print(f"        Component {i}: {comp.min():.4f}/{comp.mean():.4f}/{comp.max():.4f}")
 
+
 if __name__ == "__main__":
     """
     Demo code showing how to use _load_training_data() to explore a dataset.
@@ -1713,4 +1855,6 @@ if __name__ == "__main__":
     # test_and_visualize(args)
 
     add_div_and_score_to_training_data(args.dataset)
+
+    load_and_checkdivergence_and_score(args.dataset)
 
