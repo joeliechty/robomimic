@@ -8,6 +8,41 @@ import torch
 import torch.nn.functional as F
 
 
+def divergence_loss(preds, labels, div_v_t, div_u_t, score_t):
+    """
+    Compute flow matching loss with divergence regularization
+    
+    L_CDM(θ) = E[ |(∇·u_t - ∇·v_t) + (u_t - v_t)·∇log p_t| ]
+    
+    Args:
+        preds: Prediected flow field sampels (robot actions) [B,D]
+        labels: Target flow field samples (robot actions) [B,D]
+        div_v_t: Divergence of predicted flow field [B]
+        div_u_t: Divergence of target flow field [B]
+        score_t: Score function samples [B,D]
+
+    Returns:
+        loss (torch.Tensor): divergence loss scalar
+    """
+    
+    # TERM 1: (∇·u_t - ∇·v_t)
+    # ---------------------------    
+    # Difference of divergences
+    divergence_diff = div_u_t - div_v_t 
+    
+    # TERM 2: (u_t - v_t)·∇log p_t
+    # ------------------------------
+    # Velocity difference
+    velocity_diff = labels - preds  # [batch, dim]
+    
+    # Dot product with score (sum over dimensions for each batch)
+    velocity_score_dot = (velocity_diff * score_t).sum(dim=1)  # [batch]
+    
+    # COMBINED DIVERGENCE LOSS
+    # L_CDM = E[ |(∇·u - ∇·v) + (u - v)·score| ]
+    return torch.abs(divergence_diff + velocity_score_dot).mean()
+    
+
 def cosine_loss(preds, labels):
     """
     Cosine loss between two tensors.
