@@ -16,7 +16,7 @@ with config.values_unlocked():
     config.train.data = dataset_path
     
     # Set output directory for results
-    config.train.output_dir = os.path.expanduser("./bc_divergence_results")
+    config.train.output_dir = os.path.expanduser("./exps/results/bc_divergence/mlp")
     config.experiment.name = "bc_mlp_divergence_test"
 
     # Configure observation keys
@@ -37,7 +37,7 @@ with config.values_unlocked():
     config.algo.actor_layer_dims = [1024, 1024]
     
     # NEW: Set divergence loss weight
-    config.algo.loss.cdm_weight = 0.1 
+    config.algo.loss.cdm_weight = 0.01 
 
     # Training settings
     config.train.batch_size = 256

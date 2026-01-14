@@ -26,9 +26,14 @@ def divergence_loss(preds, labels, div_v_t, div_u_t, score_t):
     """
 
     # extract ee pose components from preds and labels
-    pred_twist = preds[..., :-1]  # [B, D-1]
-    label_twist = labels[..., :-1]  # [B, D-1]
-    
+    pred_pos_and_axis = preds[..., :-1]  # [B, D-1]
+    label_pos_and_axis = labels[..., :-1]  # [B, D-1]
+
+    # control rate
+    dt = 0.05 # 20 Hz control frequency
+    pred_twist = pred_pos_and_axis / dt  # [B, D-1]
+    label_twist = label_pos_and_axis / dt  # [B, D-1
+
     # TERM 1: (∇·u_t - ∇·v_t)
     # ---------------------------    
     # Difference of divergences
