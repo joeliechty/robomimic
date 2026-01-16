@@ -215,7 +215,7 @@ class BC(PolicyAlgo):
             div_v_t = compute_policy_divergence_during_training(
                 model=self.nets["policy"], 
                 batch=batch, 
-                n_samples=3
+                n_samples=1
             )
             
             if div_v_t is not None:
