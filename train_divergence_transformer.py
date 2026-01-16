@@ -149,14 +149,6 @@ args = parse_args()
 # Update this path if your file is located elsewhere
 dataset_path = os.path.expanduser(args.dataset_path)
 
-# Print parsed arguments for debugging
-print("=" * 50)
-print("Parsed Arguments:")
-print(f"  use_divergence_loss: {args.use_divergence_loss}")
-print(f"  div_loss_weight: {args.div_loss_weight}")
-print(f"  dataset_path: {args.dataset_path}")
-print("=" * 50)
-
 # Create default BC configuration
 config = config_factory(algo_name="bc")
 
@@ -233,7 +225,7 @@ with config.values_unlocked():
 
     # Training settings
     config.train.batch_size = 256
-    config.train.num_epochs = 200
+    config.train.num_epochs = args.epochs
     config.train.seq_length = 10  # Must match transformer.context_length
     config.train.cuda = torch.cuda.is_available()
     
