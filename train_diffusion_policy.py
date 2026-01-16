@@ -8,15 +8,15 @@ import argparse
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--dataset_path", "-D",
+        "--dataset", "-D",
         type=str,
-        default="/app/robomimic/datasets/lift/ph/low_dim_v15.hdf5",
+        default="lift",
         help="path to dataset hdf5 file"
     )
     parser.add_argument(
         "--output_dir", "-O",
         type=str,
-        default="./exps/results/diffusion_policy",
+        default="./exps/results/bc_rss/diffusion_policy",
         help="directory to save results"
     )
     parser.add_argument(
@@ -35,6 +35,15 @@ def parse_args():
 
 args = parse_args()
 
+if args.dataset == "lift":
+    args.dataset_path = "/app/robomimic/datasets/lift/ph/low_dim_v15.hdf5"
+elif args.dataset == "can":
+    args.dataset_path = "/app/robomimic/datasets/can/img/can_feat.hdf5"
+elif args.dataset == "square":
+    args.dataset_path = "/app/robomimic/datasets/square/img/square_feat.hdf5"
+else:
+    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
+
 # Path to your dataset
 dataset_path = os.path.expanduser(args.dataset_path)
 
@@ -47,6 +56,7 @@ with config.values_unlocked():
     
     # Set output directory for results
     base_dir = os.path.expanduser(args.output_dir)
+    base_dir = os.path.join(base_dir, args.dataset)
     config.train.output_dir = base_dir
 
     # Search the output directory for existing experiments to set experiment name
