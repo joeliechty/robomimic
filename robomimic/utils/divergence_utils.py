@@ -92,15 +92,25 @@ def _estimate_divergence_jvp(model, batch, obs_key_pos='robot0_eef_pos', obs_key
         raise ValueError(f"obs_dict must contain '{obs_key_pos}' and '{obs_key_quat}' keys. "
                         f"Available keys: {list(obs_dict.keys())}")
     
-    ee_pos = obs_dict[obs_key_pos]  # [batch, 3]
-    ee_quat = obs_dict[obs_key_quat]  # [batch, 4]
+    ee_pos = obs_dict[obs_key_pos]  # [batch, 3] or [batch, time, 3]
+    ee_quat = obs_dict[obs_key_quat]  # [batch, 4] or [batch, time, 4]
     
-    batch_size = ee_pos.shape[0]
-    device = ee_pos.device
-    dtype = ee_pos.dtype
+    # Handle temporal data (RNN/Transformer): only perturb last timestep
+    is_temporal = ee_pos.dim() == 3
+    if is_temporal:
+        ee_pos_last = ee_pos[:, -1, :]  # [batch, 3]
+        ee_quat_last = ee_quat[:, -1, :]  # [batch, 4]
+    else:
+        ee_pos_last = ee_pos
+        ee_quat_last = ee_quat
+    
+    batch_size = ee_pos_last.shape[0]
+    device = ee_pos_last.device
+    dtype = ee_pos_last.dtype
     
     # Construct base end-effector pose [batch, 7] = [pos(3), quat(4)]
-    base_ee_pose = torch.cat([ee_pos, ee_quat], dim=-1)
+    # This is the pose at the last timestep (or only timestep for non-temporal models)
+    base_ee_pose = torch.cat([ee_pos_last, ee_quat_last], dim=-1)
     
     # Accumulate divergence estimates across samples
     divergence_samples = []
@@ -122,17 +132,26 @@ def _estimate_divergence_jvp(model, batch, obs_key_pos='robot0_eef_pos', obs_key
             Returns:
                 [batch, action_dim] - model's action prediction
             """
-            # Perturb the base end-effector pose using twist
+            # Perturb the base end-effector pose (last timestep) using twist
             perturbed_ee_pose = add_twist_to_pose(base_ee_pose, twist, dt=1.0, w_first=False, world_frame=True)
             
             # Split back into position and quaternion
-            perturbed_pos = perturbed_ee_pose[:, :3]
-            perturbed_quat = perturbed_ee_pose[:, 3:]
+            perturbed_pos = perturbed_ee_pose[:, :3]  # [batch, 3]
+            perturbed_quat = perturbed_ee_pose[:, 3:]  # [batch, 4]
             
             # Create perturbed observation dictionary
             perturbed_obs_dict = {k: v.clone() for k, v in obs_dict.items()}
-            perturbed_obs_dict[obs_key_pos] = perturbed_pos
-            perturbed_obs_dict[obs_key_quat] = perturbed_quat
+            
+            if is_temporal:
+                # For temporal models: replace only the last timestep
+                perturbed_obs_dict[obs_key_pos] = obs_dict[obs_key_pos].clone()
+                perturbed_obs_dict[obs_key_quat] = obs_dict[obs_key_quat].clone()
+                perturbed_obs_dict[obs_key_pos][:, -1, :] = perturbed_pos
+                perturbed_obs_dict[obs_key_quat][:, -1, :] = perturbed_quat
+            else:
+                # For non-temporal models: replace the entire observation
+                perturbed_obs_dict[obs_key_pos] = perturbed_pos
+                perturbed_obs_dict[obs_key_quat] = perturbed_quat
             
             # Run model with perturbed observations
             # This works for all BC architectures: MLP, RNN, Transformer, Gaussian, GMM, VAE
@@ -703,7 +722,7 @@ def _compute_score(data, bandwidth=0.1):
 # Public methods
 ############################
 # model divergence enstimation
-def compute_policy_divergence_during_training(model, batch, n_samples=3):
+def compute_policy_divergence_during_training(model, batch, n_samples=1):
     """
     Convenience wrapper to compute policy divergence during BC training.
     This function can be called directly from train_on_batch() methods.

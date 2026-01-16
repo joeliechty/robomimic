@@ -38,8 +38,9 @@ RUN curl -fsSL https://repo.anaconda.com/miniconda/Miniconda3-py39_23.5.2-0-Linu
 RUN /opt/conda/bin/conda create -n robomimic_venv python=3.9 -y
 
 # Install PyTorch and torchvision with CPU fallback
-RUN /opt/conda/bin/conda run -n robomimic_venv conda install -y pytorch==2.0.0 torchvision==0.15.0 cpuonly -c pytorch || \
-    /opt/conda/bin/conda run -n robomimic_venv pip install torch==2.0.0+cpu torchvision==0.15.0+cpu
+# RUN /opt/conda/bin/conda run -n robomimic_venv conda install -y pytorch==2.0.0 torchvision==0.15.0 cpuonly -c pytorch || \
+#     /opt/conda/bin/conda run -n robomimic_venv pip install torch==2.0.0+cpu torchvision==0.15.0+cpu
+RUN /opt/conda/bin/conda run -n robomimic_venv conda install -y pytorch==2.0.0 torchvision==0.15.0 pytorch-cuda=11.8 mkl==2021.4.0 mkl-service==2.4.0 -c pytorch -c nvidia
 
 # Install robomimic from source
 WORKDIR /opt
