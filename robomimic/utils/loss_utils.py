@@ -15,31 +15,47 @@ def divergence_loss(preds, labels, div_v_t, div_u_t, score_t):
     L_CDM(θ) = E[ |(∇·u_t - ∇·v_t) + (u_t - v_t)·∇log p_t| ]
     
     Args:
-        preds: Prediected flow field sampels (robot actions) [B,D]
-        labels: Target flow field samples (robot actions) [B,D]
+        preds: Prediected flow field sampels (robot actions including gripper command) [B,D]
+        labels: Target flow field samples (robot actions including gripper command) [B,D]
         div_v_t: Divergence of predicted flow field [B]
         div_u_t: Divergence of target flow field [B]
-        score_t: Score function samples [B,D]
+        score_t: Score function samples [B,D-1]
 
     Returns:
         loss (torch.Tensor): divergence loss scalar
     """
-    
+
+    # extract ee pose components from preds and labels
+    pred_pose = preds[..., :-1]  # [B, D-1]
+    label_pose = labels[..., :-1]  # [B, D-1]
+
+    # control rate
+    dt = 0.05 # 20 Hz control frequency
+
+    # the pred/label actions are axis-angle so convert to twist by dividing by dt
+    # *not mathematically exact, but works as an approximation for small angles*
+    pred_twist = pred_pose / dt  # [B, D-1], units: position m/s, orientation rad/s
+    label_twist = label_pose / dt  # [B, D-1, units: position m/s, orientation rad/s
+
     # TERM 1: (∇·u_t - ∇·v_t)
     # ---------------------------    
+    # The true divergences are already wrt time since they were computed using savgol with dt=OCS control rate
+    # So just need to scale predicted divergence wrt time
+    div_v_t = div_v_t / dt  # [B], units: 1/s
+
     # Difference of divergences
-    divergence_diff = div_u_t - div_v_t 
+    divergence_diff = div_u_t - div_v_t # [B], units: 1/s
     
     # TERM 2: (u_t - v_t)·∇log p_t
     # ------------------------------
     # Velocity difference
-    velocity_diff = labels - preds  # [batch, dim]
+    velocity_diff = label_twist - pred_twist # [B,D-1], units: position m/s, orientation rad/s
     
     # Dot product with score (sum over dimensions for each batch)
-    velocity_score_dot = (velocity_diff * score_t).sum(dim=1)  # [batch]
+    velocity_score_dot = (velocity_diff * score_t).sum(dim=1) # [B], units: 1/s
     
     # COMBINED DIVERGENCE LOSS
-    # L_CDM = E[ |(∇·u - ∇·v) + (u - v)·score| ]
+    # L_CDM = E[ |(∇·u - ∇·v) + (u - v)·score| ], units: 1/s
     return torch.abs(divergence_diff + velocity_score_dot).mean()
     
 

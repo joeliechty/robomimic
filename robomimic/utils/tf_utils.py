@@ -1151,7 +1151,7 @@ def compute_twist_between_poses(pose1, pose2=None, dt=1.0, relative_pose=None, w
     
     return twist
 
-def add_twist_to_pose(pose, twist, dt, w_first=True):
+def add_twist_to_pose(pose, twist, dt, w_first=True, world_frame=False):
     """
     Add a twist over time dt to a pose
     
@@ -1160,6 +1160,7 @@ def add_twist_to_pose(pose, twist, dt, w_first=True):
         twist: Tensor of shape [..., 6] (vx, vy, vz, ωx, ωy, ωz)
         dt: Tensor of shape [..., 1] Time period to apply twist for
         w_first: Whether the input quaternion representation uses (qw, qx, qy, qz) format (default: True)
+        world_frame: Whether the twist is expressed in the world frame (default: False)
         
     Returns:
         Updated pose of shape [..., 7]
@@ -1168,11 +1169,20 @@ def add_twist_to_pose(pose, twist, dt, w_first=True):
     # convert pose to position and quaternion (x, y, z, qw, qx, qy, qz)
     pose, pose_rep = _convert_pose_any_to_pose_quat(pose, w_first=w_first)
 
+    # Convert dt to tensor if it's a scalar (needed for JVP compatibility)
+    if not torch.is_tensor(dt):
+        dt = torch.tensor(dt, dtype=pose.dtype, device=pose.device)
+    
     # Ensure dt has the correct shape [..., 1]
     if dt.dim() == 0:  # scalar tensor
         dt = dt.unsqueeze(-1)
     elif dt.shape[-1] != 1:
         dt = dt.unsqueeze(-1)
+
+    # Broadcast dt to match pose batch dimensions BEFORE checking compatibility
+    if dt.numel() == 1:
+        # If dt is scalar, expand it to match pose batch dimensions + 1 for the trailing dim
+        dt = dt.view(*([1] * (pose.dim() - 1)), 1).expand(*pose.shape[:-1], 1)
 
     # check that twist and pose batch dimensions are compatible
     if pose.shape[:-1] != twist.shape[:-1] or pose.shape[:-1] != dt.shape[:-1] or twist.shape[:-1] != dt.shape[:-1]:
@@ -1184,10 +1194,6 @@ def add_twist_to_pose(pose, twist, dt, w_first=True):
     linear_vel = twist[..., :3]
     angular_vel = twist[..., 3:6]
     
-    # 1. Update position (simple integration)
-    new_position = position + linear_vel * dt
-    
-    # 2. Update orientation using exponential map
     # Calculate the rotation angle from angular velocity
     angle = torch.norm(angular_vel, dim=-1, keepdim=True) * dt
     
@@ -1208,8 +1214,22 @@ def add_twist_to_pose(pose, twist, dt, w_first=True):
         axis * sin_half
     ], dim=-1)
     
-    # Apply the rotation using quaternion multiplication
-    new_quaternion = _quaternion_multiply(quaternion, rot_quat)
+    if world_frame:
+        # World frame (left multiplication): twist is expressed in world coordinates
+        # Position update: linear velocity is already in world frame
+        new_position = position + linear_vel * dt
+        
+        # Orientation update: q_new = q_rot * q_old (left multiplication)
+        new_quaternion = _quaternion_multiply(rot_quat, quaternion)
+    else:
+        # Body frame (right multiplication): twist is expressed in body coordinates
+        # Position update: rotate linear velocity from body to world frame first
+        rot_mat = _quat_to_rot_mat(quaternion, w_first=True)
+        linear_vel_world = torch.matmul(rot_mat, linear_vel.unsqueeze(-1)).squeeze(-1)
+        new_position = position + linear_vel_world * dt
+        
+        # Orientation update: q_new = q_old * q_rot (right multiplication)
+        new_quaternion = _quaternion_multiply(quaternion, rot_quat)
     
     # Normalize the resulting quaternion
     new_quaternion = new_quaternion / torch.norm(new_quaternion, dim=-1, keepdim=True)

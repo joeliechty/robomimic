@@ -56,6 +56,8 @@ RUN /opt/conda/bin/conda run -n robomimic_venv pip install "numpy<2.0"
 # We use --only-binary to tell pip: "Do not try to compile this, if you can't find a wheel, fail."
 RUN /opt/conda/bin/conda run -n robomimic_venv pip install --only-binary=mujoco "mujoco>=3.3.0"
 
+RUN /opt/conda/bin/conda run -n robomimic_venv pip install geomstats
+
 # 3. NOW install robosuite
 RUN git clone https://github.com/ARISE-Initiative/robosuite.git && \
     cd robosuite && \
