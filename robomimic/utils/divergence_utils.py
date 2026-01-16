@@ -123,7 +123,7 @@ def _estimate_divergence_jvp(model, batch, obs_key_pos='robot0_eef_pos', obs_key
                 [batch, action_dim] - model's action prediction
             """
             # Perturb the base end-effector pose using twist
-            perturbed_ee_pose = add_twist_to_pose(base_ee_pose, twist, dt=1.0, w_first=False)
+            perturbed_ee_pose = add_twist_to_pose(base_ee_pose, twist, dt=1.0, w_first=False, world_frame=True)
             
             # Split back into position and quaternion
             perturbed_pos = perturbed_ee_pose[:, :3]
@@ -808,7 +808,9 @@ def add_div_and_score_to_training_data(load_path, save_path=None, verbose=True, 
         print(f"NaNs per bin (min/mean/max): {nan_counts.min()}/{nan_counts.float().mean():.1f}/{nan_counts.max()}")
         print(f"\nComputing divergence and score of ee_states:")
     state_graphs = _construct_state_graph(ee_state_tensor)
-    div_ee = _compute_divergence_via_neighbors(state_graphs, dphase,  k=k)
+    # OCS control is usually 20Hz and want div to be wrt seconds, not pahse so set dt=1/20
+    dt = 0.05
+    div_ee = _compute_divergence_via_neighbors(state_graphs, dt, k=k)
     score_ee = _compute_score_via_neighbors(state_graphs, bandwidth=bandwidth)
 
     if verbose:
@@ -1779,7 +1781,9 @@ def test_and_visualize(args):
     state_graphs = _construct_state_graph(ee_state_tensor)
 
     # compute divergence via neighbors
-    div_ee = _compute_divergence_via_neighbors(state_graphs, dphase,  k=4)
+    # use OCS dt (20hz)
+    dt = 0.05
+    div_ee = _compute_divergence_via_neighbors(state_graphs, dt, k=4)
     print(f"    Divergence tensor shape: {div_ee.shape}")
     valid_div = div_ee[~torch.isnan(div_ee)]
     print(f"    Divergence valid count: {valid_div.shape[0]}/{div_ee.numel()}")
@@ -1850,11 +1854,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, required=True, help="Path to HDF5 dataset")
     parser.add_argument("--demo", type=str, default="demo_0", help="Demo key to inspect")
+    parser.add_argument("--test", action='store_true', help="Whether to test divergence computation")
     args = parser.parse_args()
     
-    # test_and_visualize(args)
+    if args.test:
+        test_and_visualize(args)
 
-    add_div_and_score_to_training_data(args.dataset)
+    else:
+        add_div_and_score_to_training_data(args.dataset)
 
-    load_and_checkdivergence_and_score(args.dataset)
+        save_path = args.dataset
+        # add "_w_div" suffix to filename before the extension
+        if '.' in args.dataset:
+            save_path = args.dataset.rsplit('.', 1)[0] + "_w_cdm." + args.dataset.rsplit('.', 1)[1]
+        else:
+            save_path = args.dataset + "_w_cdm"
+
+        load_and_checkdivergence_and_score(save_path)
 

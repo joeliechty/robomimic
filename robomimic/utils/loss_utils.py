@@ -26,29 +26,36 @@ def divergence_loss(preds, labels, div_v_t, div_u_t, score_t):
     """
 
     # extract ee pose components from preds and labels
-    pred_pos_and_axis = preds[..., :-1]  # [B, D-1]
-    label_pos_and_axis = labels[..., :-1]  # [B, D-1]
+    pred_pose = preds[..., :-1]  # [B, D-1]
+    label_pose = labels[..., :-1]  # [B, D-1]
 
     # control rate
     dt = 0.05 # 20 Hz control frequency
-    pred_twist = pred_pos_and_axis / dt  # [B, D-1]
-    label_twist = label_pos_and_axis / dt  # [B, D-1
+
+    # the pred/label actions are axis-angle so convert to twist by dividing by dt
+    # *not mathematically exact, but works as an approximation for small angles*
+    pred_twist = pred_pose / dt  # [B, D-1], units: position m/s, orientation rad/s
+    label_twist = label_pose / dt  # [B, D-1, units: position m/s, orientation rad/s
 
     # TERM 1: (∇·u_t - ∇·v_t)
     # ---------------------------    
+    # The true divergences are already wrt time since they were computed using savgol with dt=OCS control rate
+    # So just need to scale predicted divergence wrt time
+    div_v_t = div_v_t / dt  # [B], units: 1/s
+
     # Difference of divergences
-    divergence_diff = div_u_t - div_v_t # [B]
+    divergence_diff = div_u_t - div_v_t # [B], units: 1/s
     
     # TERM 2: (u_t - v_t)·∇log p_t
     # ------------------------------
     # Velocity difference
-    velocity_diff = label_twist - pred_twist # [B,D-1]
+    velocity_diff = label_twist - pred_twist # [B,D-1], units: position m/s, orientation rad/s
     
     # Dot product with score (sum over dimensions for each batch)
-    velocity_score_dot = (velocity_diff * score_t).sum(dim=1) # [B]
+    velocity_score_dot = (velocity_diff * score_t).sum(dim=1) # [B], units: 1/s
     
     # COMBINED DIVERGENCE LOSS
-    # L_CDM = E[ |(∇·u - ∇·v) + (u - v)·score| ]
+    # L_CDM = E[ |(∇·u - ∇·v) + (u - v)·score| ], units: 1/s
     return torch.abs(divergence_diff + velocity_score_dot).mean()
     
 
