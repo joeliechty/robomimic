@@ -479,8 +479,10 @@ class BC_VAE(BC):
         )
 
         vae_outputs = self.nets["policy"].forward_train(**vae_inputs)
+        # Extract action tensor from decoder_outputs dictionary
+        decoder_actions = vae_outputs["decoder_outputs"]["action"] if isinstance(vae_outputs["decoder_outputs"], dict) else vae_outputs["decoder_outputs"]
         predictions = OrderedDict(
-            actions=vae_outputs["decoder_outputs"],
+            actions=decoder_actions,
             kl_loss=vae_outputs["kl_loss"],
             reconstruction_loss=vae_outputs["reconstruction_loss"],
             encoder_z=vae_outputs["encoder_z"],
@@ -509,11 +511,53 @@ class BC_VAE(BC):
         kl_loss = predictions["kl_loss"]
         recons_loss = predictions["reconstruction_loss"]
         action_loss = recons_loss + self.algo_config.vae.kl_weight * kl_loss
-        return OrderedDict(
+
+        losses = OrderedDict(
             recons_loss=recons_loss,
             kl_loss=kl_loss,
             action_loss=action_loss,
         )
+
+        # CDM (Divergence) Loss
+        if "divergence" in batch and "score" in batch:
+            # Predict divergence of the model policy
+            # Note: This requires 'robot0_eef_pos' and 'robot0_eef_quat' to be in batch["obs"]
+            div_v_t = compute_policy_divergence_during_training(
+                model=self.nets["policy"], 
+                batch=batch, 
+                n_samples=1
+            )
+            
+            if div_v_t is not None:
+                div_u_t = batch["divergence"]
+                score_t = batch["score"]
+                
+                cdm_loss = LossUtils.divergence_loss(
+                    preds=predictions["actions"], 
+                    labels=batch["actions"], 
+                    div_v_t=div_v_t, 
+                    div_u_t=div_u_t, 
+                    score_t=score_t
+                )
+                
+                losses["cdm_loss"] = cdm_loss
+                losses["action_loss"] += self.algo_config.loss.cdm_weight * cdm_loss
+            else:
+                if not hasattr(self, "_warned_div_none"):
+                    print("WARNING: CDM Loss skipped because div_v_t is None (divergence computation failed)")
+                    self._warned_div_none = True
+        else:
+            if not hasattr(self, "_warned_missing_cdm_keys"):
+                missing = []
+                if "divergence" not in batch:
+                    missing.append("divergence")
+                if "score" not in batch:
+                    missing.append("score")
+                # print(f"WARNING: CDM Loss skipped because keys missing in batch: {missing}")
+                # print(f"         Available batch keys: {list(batch.keys())}")
+                self._warned_missing_cdm_keys = True
+
+        return losses
 
     def log_info(self, info):
         """
@@ -530,6 +574,8 @@ class BC_VAE(BC):
         log["Loss"] = info["losses"]["action_loss"].item()
         log["KL_Loss"] = info["losses"]["kl_loss"].item()
         log["Reconstruction_Loss"] = info["losses"]["recons_loss"].item()
+        if "cdm_loss" in info["losses"]:
+            log["CDM_Loss"] = info["losses"]["cdm_loss"].item()
         if self.algo_config.vae.prior.use_categorical:
             log["Gumbel_Temperature"] = self.nets["policy"].get_gumbel_temperature()
         else:

@@ -9,15 +9,15 @@ fi
 
 # Launch Transformer WITH Divergence (-CDM flag)
 docker run -d \
-  --name train_transformer_cdm_$1 \
+  --name train_vae_cdm_$1 \
   --gpus all \
   --net=host \
   -v $(pwd):/app/robomimic \
   -w /app/robomimic \
   robomimic \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer.py -CDM -L 0.01 -E 1000"
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_vae.py -CDM -L 0.01 -E 1000"
 
 echo "Waiting 20s to prevent experiment ID collision..."
 sleep 20
 
-echo "Launched transformer CDM job with ID: $1"
+echo "Launched VAE CDM job with ID: $1"

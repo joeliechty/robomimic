@@ -231,7 +231,7 @@ with config.values_unlocked():
     
     # Save checkpoints
     config.experiment.save.enabled = True
-    config.experiment.save.every_n_epochs = 1
+    config.experiment.save.every_n_epochs = 50
     
     # Validation settings (disable to keep it simple for now)
     config.experiment.validate = False 
