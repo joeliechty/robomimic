@@ -21,7 +21,7 @@ def get_all_registered_configs():
     return deepcopy(REGISTERED_CONFIGS)
 
 
-def config_factory(algo_name, dic=None):
+def config_factory(algo_name, dic=None, image_feats=False):
     """
     Creates an instance of a config from the algo name. Optionally pass
     a dictionary to instantiate the config from the dictionary.
@@ -29,7 +29,11 @@ def config_factory(algo_name, dic=None):
     if algo_name not in REGISTERED_CONFIGS:
         raise Exception("Config for algo name {} not found. Make sure it is a registered config among: {}".format(
             algo_name, ', '.join(REGISTERED_CONFIGS)))
-    return REGISTERED_CONFIGS[algo_name](dict_to_load=dic)
+    config = REGISTERED_CONFIGS[algo_name](dict_to_load=dic)
+    if image_feats:
+        if 'robot0_eye_in_hand_feats' not in config.observation.modalities.obs.low_dim:
+            config.observation.modalities.obs.low_dim.append('robot0_eye_in_hand_feats')
+    return config
 
 
 class ConfigMeta(type):
