@@ -58,6 +58,7 @@ import imageio
 import numpy as np
 from copy import deepcopy
 import os
+import time
 
 import torch
 
@@ -69,6 +70,8 @@ import robomimic.utils.obs_utils as ObsUtils
 from robomimic.envs.env_base import EnvBase
 from robomimic.envs.wrappers import EnvWrapper
 from robomimic.algo import RolloutPolicy
+
+from tqdm import tqdm
 
 
 def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5, return_obs=False, camera_names=None):
@@ -107,6 +110,7 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
     results = {}
     video_count = 0  # video frame counter
     total_reward = 0.
+    inference_times = []  # track inference time per step
     traj = dict(actions=[], rewards=[], dones=[], states=[], initial_state_dict=state_dict)
     if return_obs:
         # store observations too
@@ -114,8 +118,11 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
     try:
         for step_i in range(horizon):
 
-            # get action from policy
+            # get action from policy and measure inference time
+            start_time = time.time()
             act = policy(ob=obs)
+            inference_time = time.time() - start_time
+            inference_times.append(inference_time)
 
             # play action
             next_obs, r, done, _ = env.step(act)
@@ -156,7 +163,17 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
     except env.rollout_exceptions as e:
         print("WARNING: got rollout exception {}".format(e))
 
-    stats = dict(Return=total_reward, Horizon=(step_i + 1), Success_Rate=float(success))
+    stats = dict(
+        Return=total_reward, 
+        Horizon=(step_i + 1), 
+        Success_Rate=float(success),
+        Inference_Time_Mean=np.mean(inference_times),
+        Inference_Time_Std=np.std(inference_times),
+        Inference_Time_Min=np.min(inference_times),
+        Inference_Time_Max=np.max(inference_times),
+        Inference_Time_Median=np.median(inference_times),
+        Inference_Time_Raw=inference_times,
+    )
 
     if return_obs:
         # convert list of dict to dict of list for obs dictionaries (for convenient writes to hdf5 dataset)
@@ -228,7 +245,7 @@ def run_trained_agent(args):
         total_samples = 0
 
     rollout_stats = []
-    for i in range(rollout_num_episodes):
+    for i in tqdm(range(rollout_num_episodes), desc="Evaluated Rollouts"): 
         stats, traj = rollout(
             policy=policy, 
             env=env, 
@@ -260,7 +277,14 @@ def run_trained_agent(args):
             total_samples += traj["actions"].shape[0]
 
     rollout_stats = TensorUtils.list_of_flat_dict_to_dict_of_list(rollout_stats)
-    avg_rollout_stats = { k : np.mean(rollout_stats[k]) for k in rollout_stats }
+    
+    # Compute averages, but skip raw inference times (list of lists)
+    avg_rollout_stats = {}
+    for k in rollout_stats:
+        if k == "Inference_Time_Raw":
+            continue  # Skip raw times, can't average nested lists
+        avg_rollout_stats[k] = np.mean(rollout_stats[k])
+    
     avg_rollout_stats["Num_Success"] = np.sum(rollout_stats["Success_Rate"])
     print("Average Rollout Stats")
     print(json.dumps(avg_rollout_stats, indent=4))
