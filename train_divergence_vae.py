@@ -20,10 +20,10 @@ def parse_args():
         help="weight for divergence loss if used"
     )
     parser.add_argument(
-        "--dataset_path","-D",
+        "--dataset", "-D",
         type=str,
-        default="/app/robomimic/datasets/lift/ph/low_dim_v15_w_cdm.hdf5",
-        help="path to dataset hdf5 file"
+        default="lift",
+        help="dataset name: 'lift', 'can', or 'square'"
     )
     parser.add_argument(
         "--epochs","-E",
@@ -36,8 +36,16 @@ def parse_args():
 
 args = parse_args()
 
+if args.dataset == "lift":
+    args.dataset_path = "/app/robomimic/datasets/lift/ph/low_dim_v15_w_cdm.hdf5"
+elif args.dataset == "can":
+    args.dataset_path = "/app/robomimic/datasets/can/img/can_feat_w_cdm.hdf5"
+elif args.dataset == "square":
+    args.dataset_path = "/app/robomimic/datasets/square/img/square_feat_w_cdm.hdf5"
+else:
+    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
+
 # Path to your dataset with divergence info
-# Update this path if your file is located elsewhere
 dataset_path = os.path.expanduser(args.dataset_path)
 
 # Create default BC configuration
@@ -57,6 +65,8 @@ with config.values_unlocked():
         base_dir += "_no_divergence"
         cdm_weight = 0.0
         print(f"CDM Loss DISABLED (weight: {cdm_weight})")
+    
+    base_dir = os.path.join(base_dir, args.dataset)
 
     # Convert to absolute path to avoid issues with relative paths
     abs_base_dir = os.path.abspath(os.path.join("robomimic",base_dir))
