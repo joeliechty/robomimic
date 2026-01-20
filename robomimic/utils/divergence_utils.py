@@ -1305,9 +1305,10 @@ def visualize_observation_trajectories(ee_state_tensor, demo_keys, nan_mask=None
     
     return fig
 
-def visualize_score_for_trajectories(
+def visualize_score_and_div_for_trajectories(
     ee_state_tensor,
     score_tensor,
+    divergence_tensor,
     selected_demo_idx,
     demo_keys,
     nan_mask=None,
@@ -1320,11 +1321,14 @@ def visualize_score_for_trajectories(
     """
     Visualize a single trajectory with its score overlaid on all other trajectories.
     Shows the selected trajectory as a solid black line on top of all others to understand
-    how it sits within the data distribution.
+    how it sits within the data distribution. Also visualizes the divergence of the trajectory compared
+    with the divergences of all the other trajectories (displayed faded) in a subplot running along
+    the bottom.
     
     Args:
         ee_state_tensor: torch.tensor [n_demos, n_bins, 7], end-effector poses (pos + quat)
         score_tensor: torch.tensor [n_bins, 6], score values (twist: linear xyz, angular xyz) for selected demo
+        divergence_tensor: torch.tensor [n_demos, n_bins], divergence values for all demos
         selected_demo_idx: int, index of the demo to highlight and show score for
         demo_keys: list of demo keys corresponding to each trajectory
         nan_mask: torch.tensor [n_demos, n_bins], boolean mask for NaN values (optional)
@@ -1369,10 +1373,11 @@ def visualize_score_for_trajectories(
     # Convert to numpy for plotting
     ee_state_np = ee_state_tensor.cpu().numpy()
     score_np = score_tensor.cpu().numpy()  # [n_bins, 6]
+    divergence_np = divergence_tensor.cpu().numpy()  # [n_demos, n_bins]
     
     # Create figure with subplots
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(5, 6, hspace=0.4, wspace=0.4, height_ratios=[1, 1, 1, 0.8, 0.8])
+    gs = fig.add_gridspec(6, 6, hspace=0.4, wspace=0.4, height_ratios=[1, 1, 1, 0.8, 0.8, 0.8])
     
     # 3D trajectory plot (spans left 3 columns, all 3 top rows)
     ax_3d = fig.add_subplot(gs[:3, :3], projection='3d')
@@ -1399,6 +1404,9 @@ def visualize_score_for_trajectories(
     ax_score_ang_x = fig.add_subplot(gs[4, 0:2])
     ax_score_ang_y = fig.add_subplot(gs[4, 2:4])
     ax_score_ang_z = fig.add_subplot(gs[4, 4:6])
+    
+    # Divergence subplot (6th row: spans all columns)
+    ax_divergence = fig.add_subplot(gs[5, :])
     
     # Color map for different demos
     colors = plt.cm.tab20(np.linspace(0, 1, len(demo_indices)))
@@ -1471,6 +1479,10 @@ def visualize_score_for_trajectories(
         ax_pitch_cos.plot(phase_values, pitch_cos, color=color, alpha=line_alpha, linewidth=1.0)
         ax_yaw_sin.plot(phase_values, yaw_sin, color=color, alpha=line_alpha, linewidth=1.0)
         ax_yaw_cos.plot(phase_values, yaw_cos, color=color, alpha=line_alpha, linewidth=1.0)
+        
+        # Plot divergence for this demo
+        div_values = divergence_np[demo_idx, valid_indices]
+        ax_divergence.plot(phase_values, div_values, color=color, alpha=line_alpha, linewidth=1.0)
     
     # Second pass: Plot the selected trajectory on top with solid black line
     selected_traj = ee_state_np[selected_demo_idx]  # [n_bins, 7]
@@ -1636,6 +1648,12 @@ def visualize_score_for_trajectories(
             ax_score_ang_z.set_xlabel('Phase' if phase_tensor is not None else 'Time Step', fontsize=9)
             ax_score_ang_z.set_ylabel('Score (rad/s)', fontsize=9)
             ax_score_ang_z.set_title('Score: Angular Z', fontsize=10, fontweight='bold')
+        
+        # Plot divergence for selected trajectory with solid black line
+        selected_div_values = divergence_np[selected_demo_idx, selected_valid_indices]
+        ax_divergence.plot(selected_phase_values, selected_div_values, 
+                          color='black', alpha=1.0, linewidth=2.5, zorder=100,
+                          label=f"Selected: {selected_demo_key}")
     
     # Configure 3D plot
     ax_3d.set_xlabel('X Position (m)')
@@ -1715,8 +1733,13 @@ def test_and_visualize(args):
     print("\n0.1. Loading dataset...")
     data = _load_training_data(args.dataset)
     
+    # Extract directory from dataset path for saving figures
+    import os
+    dataset_dir = os.path.dirname(args.dataset)
+    print(f"\nFigures will be saved to: {dataset_dir}")
+    
     # Show available demos
-    print(f"\n0.2. Available demos: {data['demos'][:]}...")  # Show all
+    # print(f"\n0.2. Available demos: {data['demos'][:]}...")  # Show all
 
     print(f"\n0.2.1 Adding phases...")
     data = _add_phase(data)
@@ -1749,7 +1772,7 @@ def test_and_visualize(args):
         print(f"\n5. Accessing specific observation: '{first_obs_key}'")
         obs = data['get_obs'](args.demo, first_obs_key)
         print(f"   Shape: {obs.shape}")
-        print(f"   First timestep: {obs[0]}")
+        # print(f"   First timestep: {obs[0]}")
     
     # Get action slices
     print(f"\n0.6. Accessing action slices...")
@@ -1772,12 +1795,14 @@ def test_and_visualize(args):
     std_n_actions = np.std(n_actions)
     min_n_actions = np.min(n_actions)
     max_n_actions = np.max(n_actions)
+    median_n_actions = np.median(n_actions)
     
     print(f"\n0.8. Trajectory length statistics across all demos:")
     print(f"   Mean: {mean_n_actions:.1f} timesteps")
     print(f"   Std:  {std_n_actions:.1f} timesteps")
     print(f"   Min:  {min_n_actions} timesteps")
     print(f"   Max:  {max_n_actions} timesteps")
+    print(f"   Median: {median_n_actions} timesteps")
 
     ################################################################
     # True flow field divergence computation demo
@@ -1815,6 +1840,9 @@ def test_and_visualize(args):
         # demo_indices=range(10),  
         frame_skip=5
     )
+    fig_path = os.path.join(dataset_dir, "trajectory_visualization.png")
+    fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+    print(f"\nSaved trajectory visualization to: {fig_path}")
     plt.show()
 
     #################################################################
@@ -1827,14 +1855,19 @@ def test_and_visualize(args):
     print(f"    Score tensor shape: {score_ee.shape}")
     valid_score = score_ee[~torch.isnan(score_ee).any(dim=2)]
     print(f"    Score valid count: {valid_score.shape[0]}/{score_ee.shape[0] * score_ee.shape[1]}")
-
-    # Visualize score for a few demos
+    
+    # Visualize score AND divergence for a few demos
+    print(f"\n2.1.1. Visualizing score and divergence together:")
     for demo_idx in range(3):
-        fig = visualize_score_for_trajectories(
-            ee_state_tensor, score_ee[demo_idx], demo_idx, demo_tensor_keys,
+        fig = visualize_score_and_div_for_trajectories(
+            ee_state_tensor, score_ee[demo_idx], div_ee, demo_idx, demo_tensor_keys,
             nan_mask=nan_mask, phase_tensor=phase_tensor,
             frame_skip=5
         )
+        demo_key = demo_tensor_keys[demo_idx]
+        fig_path = os.path.join(dataset_dir, f"score_div_visualization_{demo_key}.png")
+        fig.savefig(fig_path, dpi=150, bbox_inches='tight')
+        print(f"  Saved visualization for demo {demo_key} to: {fig_path}")
         plt.show()
 
     print(f"\n2.2. Unbinning divergence and score data:")
