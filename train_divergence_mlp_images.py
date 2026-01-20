@@ -1,5 +1,8 @@
-import robomimic
 import os
+os.environ["MUJOCO_GL"] = "egl"
+os.environ["PYOPENGL_PLATFORM"] = "egl"
+import robomimic
+import robosuite
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -45,10 +48,13 @@ class CLIPRolloutWrapper(RolloutPolicy):
     """Wraps policy to add CLIP encoding at rollout time."""
     def __init__(self, policy, device, use_image_feats=False):
         print(">>> Entering CLIPRolloutWrapper.__init__()")
-        super().__init__(policy=policy)
+        #super().__init__(policy=policy)
+        self.policy = policy
+        self.device = device
         self.policy_device = device
         self.use_image_feats = use_image_feats
         self.clip_device = "cpu"  
+        
         print(">>> use_image_feats =", self.use_image_feats)
         if self.use_image_feats:
             print(">>> About to import clip")
@@ -72,11 +78,40 @@ class CLIPRolloutWrapper(RolloutPolicy):
             ).view(1, 3, 1, 1)
             print(">>> CLIP preprocessing tensors created")
 
+    def set_eval(self):
+        """Forward set_eval to the underlying policy."""
+        if hasattr(self.policy, "set_eval"):
+            self.policy.set_eval()
+
+    def set_train(self):
+        """Forward set_train to the underlying policy."""
+        if hasattr(self.policy, "set_train"):
+            self.policy.set_train()
+
+    def start_episode(self):
+        """Ensure the underlying policy starts its episode."""
+        if hasattr(self.policy, "start_episode"):
+            self.policy.start_episode()
+
+    def __getattr__(self, name):
+        """
+        Failsafe: forward any attribute access (like 'device' or 'policy') 
+        to the wrapped policy.
+        """
+        return getattr(self.policy, name)
+
     def __call__(self, ob, goal=None, batched_ob=False):
         """
         Process observation (add CLIP features if needed), then call parent policy.
         """
-        if self.use_image_feats and "robot0_eye_in_hand_image" in ob:
+        if self.use_image_feats:
+            img_key = "robot0_eye_in_hand_image"
+            raw_img = None
+            if hasattr(self.policy, "env"):
+                # This bypasses the filtered 'ob' dict
+                raw_obs = self.policy.env.get_observation()
+                if img_key in raw_obs:
+                    raw_img = raw_obs[img_key]
             img = torch.from_numpy(ob["robot0_eye_in_hand_image"]).float().to(self.clip_device)
             img = img.permute(2, 0, 1).unsqueeze(0).float() / 255.0
             print("Image shape before preprocessing:", img.shape)
@@ -93,12 +128,12 @@ class CLIPRolloutWrapper(RolloutPolicy):
                 feats = self.clip_model.encode_image(img).float()
 
             
-            ob["robot0_eye_in_hand_feats"] = feats.squeeze(0).cpu().numpy().astype(np.float32)
-            
-            
+            ob["robot0_eye_in_hand_feats"] = feats.squeeze(0).cpu().numpy()
+          
             del img, feats
+            del ob[img_key]
         
-        return super().__call__(ob=ob, goal=goal, batched_ob=batched_ob)
+        return self.policy.policy.get_action(obs_dict=ob, goal_dict=goal)
 
 
 
@@ -136,7 +171,7 @@ with config.values_unlocked():
     config.train.num_epochs = 200
     
    
-    config.experiment.rollout.enabled = True
+    config.experiment.rollout.enabled = False
     config.experiment.save.enabled = True
     config.experiment.save.every_n_epochs = 3
     
@@ -147,6 +182,8 @@ with config.values_unlocked():
     if args.use_image_feats:
         config.experiment.env_meta_update_dict = {
             "use_images": True, 
+            "use_camera_obs": True,
+            "render_offscreen": True,
             "camera_names": ["robot0_eye_in_hand"], 
             "camera_height": 84, 
             "camera_width": 84
@@ -166,8 +203,18 @@ def wrapped_run_rollout(*args, **kwargs):
     gc.collect()
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
-    base_policy = kwargs["policy"]
+    
+    env = kwargs.get("env", None)
+    if env is not None and USE_IMAGE_FEATS:
+        # This reaches into the robosuite/robomimic env and forces image generation
+        if hasattr(env, "env"):
+            # Set flags directly on the underlying robosuite env
+            env.env.use_camera_obs = True
+            env.env.camera_names = ["robot0_eye_in_hand"]
+            env.env.camera_height = 84
+            env.env.camera_width = 84
 
+    base_policy = kwargs["policy"]
     
     if not USE_IMAGE_FEATS:
         return original_run_rollout(*args, **kwargs)
