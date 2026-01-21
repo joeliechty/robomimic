@@ -5,6 +5,7 @@ from robomimic.config import config_factory
 from robomimic.scripts.train import train
 import robomimic.algo.bc as bc
 import argparse
+import h5py
 
 # add arguements for use_divergence_loss, div_loss_weight, dataset_path
 def parse_args():
@@ -79,6 +80,30 @@ def get_action_with_history(self, obs_dict, goal_dict=None):
 
 def reset_with_history(self):
     self.obs_history = {}
+
+original_path = "dataset/can/can_feats.hdf5" # The source file
+new_path = "dataset/can/can_feats_w_cdm.hdf5"    # Your new file
+
+with h5py.File(original_path, "r") as source, h5py.File(new_path, "a") as target:
+    # 1. Fix Global Data Attributes (from previous error)
+    print("Fixing global 'data' attributes...")
+    for attr_name in source["data"].attrs:
+        target["data"].attrs[attr_name] = source["data"].attrs[attr_name]
+
+    # 2. Fix Individual Demo Attributes (the current KeyError)
+    demos = list(target["data"].keys())
+    print(f"Fixing attributes for {len(demos)} demos...")
+    
+    for demo in demos:
+        if demo in source["data"]:
+            src_group = source["data"][demo]
+            tgt_group = target["data"][demo]
+            
+            # Copy all attributes (num_samples, model_file, etc.)
+            for attr_name in src_group.attrs:
+                tgt_group.attrs[attr_name] = src_group.attrs[attr_name]
+                
+print("Patching complete. Your dataset is now compatible with robomimic's loader.")
 
 bc.BC_Transformer.get_action = get_action_with_history
 bc.BC_Transformer.reset = reset_with_history
