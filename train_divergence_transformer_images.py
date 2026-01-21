@@ -30,13 +30,8 @@ def sync_all_attributes(source_path, target_path):
         print(f"  [OK] Attributes for {len(demos)} demos synced.")
 
 # Update these paths to your actual local file locations
-source = "dataset/can/can_demo.hdf5"
-target = "dataset/can/can_feats_w_cdm.hdf5"
-
-if os.path.exists(source) and os.path.exists(target):
-    sync_all_attributes(source, target)
-else:
-    print("Check your file paths!")
+# source = "/app/robomimic/dataset/can/can_demo.hdf5"
+# target = "/app/robomimic/dataset/can/can_feats_w_cdm.hdf5"
 
 # add arguements for use_divergence_loss, div_loss_weight, dataset_path
 def parse_args():
@@ -49,7 +44,7 @@ def parse_args():
     parser.add_argument(
         "--div_loss_weight","-L",
         type=float,
-        default=0.001,
+        default=0.0001,
         help="weight for divergence loss if used"
     )
     parser.add_argument(
@@ -68,6 +63,25 @@ def parse_args():
         "--use_images", "-I",
         action='store_true',
         help="set this flag to include image observations"
+    )
+    parser.add_argument(
+        "--dataset_portion","-DP",
+        type=str,
+        default="full",
+        choices=["full", "half", "quarter"],
+        help="dataset portion: 'full', 'half', or 'quarter'"
+    )
+    parser.add_argument(
+        "--portion_id","-PI",
+        type=int,
+        default=1,
+        help="which portion (1-2 for half, 1-4 for quarter, ignored for full)"
+    )
+    parser.add_argument(
+        "--save_freq","-SF",
+        type=int,
+        default=10,
+        help="save checkpoint every N epochs"
     )
     return parser.parse_args()
 
@@ -181,17 +195,38 @@ print("Applied BC_Transformer monkey-patch for process_batch_for_training (CDM)"
 
 args = parse_args()
 
+if args.dataset_portion == "full":
+    portion_prefix = "F"
+    dataset_suffix = ""
+elif args.dataset_portion == "half":
+    portion_prefix = f"H{args.portion_id}"
+    dataset_suffix = f"_H{args.portion_id}"
+elif args.dataset_portion == "quarter":
+    portion_prefix = f"Q{args.portion_id}"
+    dataset_suffix = f"_Q{args.portion_id}"
+else:
+    portion_prefix = "F"
+    dataset_suffix = ""
+
 if args.dataset == "lift":
-    args.dataset_path = "dataset/lift/low_dim_v15_w_cdm.hdf5"
+    target = f"/app/robomimic/datasets/lift/low_dim_v15{dataset_suffix}_w_cdm.hdf5"
 elif args.dataset == "can":
-    args.dataset_path = "dataset/can/can_feats_w_cdm.hdf5"
+    target = f"/app/robomimic/datasets/can/can_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"/app/robomimic/datasets/can/can_demo.hdf5"
 elif args.dataset == "square":
-    args.dataset_path = "dataset/square/square_feat_w_cdm.hdf5"
+    target = f"/app/robomimic/datasets/square/square_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"/app/robomimic/datasets/square/square_demo.hdf5"
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
+if args.dataset == "can" or args.dataset == "square":
+    if os.path.exists(source) and os.path.exists(target):
+        sync_all_attributes(source, target)
+    else:
+        print("Check your file paths!")
+
 # Path to your dataset with divergence info
-dataset_path = os.path.expanduser(args.dataset_path)
+dataset_path = os.path.expanduser(target)
 
 # Create default BC configuration
 config = config_factory(algo_name="bc")
@@ -244,7 +279,6 @@ with config.values_unlocked():
             if exp_numbers:
                 exp_num = max(exp_numbers) + 1
 
-    config.experiment.name = f"exp{exp_num}"
     config.train.output_dir = base_dir
 
     # Configure observation keys
@@ -282,7 +316,10 @@ with config.values_unlocked():
     
     # Save checkpoints
     config.experiment.save.enabled = True
-    config.experiment.save.every_n_epochs = 5
+    config.experiment.save.every_n_epochs = args.save_freq
+    
+    # Set experiment name with dataset portion, epochs, and save frequency
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}" #_exp{exp_num}"
     
     # Validation settings (disable to keep it simple for now)
     config.experiment.validate = False 

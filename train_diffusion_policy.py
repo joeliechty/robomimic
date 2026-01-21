@@ -31,16 +31,48 @@ def parse_args():
         default=256,
         help="training batch size"
     )
+    parser.add_argument(
+        "--dataset_portion","-DP",
+        type=str,
+        default="full",
+        choices=["full", "half", "quarter"],
+        help="dataset portion: 'full', 'half', or 'quarter'"
+    )
+    parser.add_argument(
+        "--portion_id","-PI",
+        type=int,
+        default=1,
+        help="which portion (1-2 for half, 1-4 for quarter, ignored for full)"
+    )
+    parser.add_argument(
+        "--save_freq","-SF",
+        type=int,
+        default=5,
+        help="save checkpoint every N epochs"
+    )
     return parser.parse_args()
 
 args = parse_args()
 
+if args.dataset_portion == "full":
+    portion_prefix = "F"
+    dataset_suffix = ""
+elif args.dataset_portion == "half":
+    portion_prefix = f"H{args.portion_id}"
+    dataset_suffix = f"_H{args.portion_id}"
+elif args.dataset_portion == "quarter":
+    portion_prefix = f"Q{args.portion_id}"
+    dataset_suffix = f"_Q{args.portion_id}"
+else:
+    portion_prefix = "F"
+    dataset_suffix = ""
+
 if args.dataset == "lift":
-    args.dataset_path = "/app/robomimic/datasets/lift/ph/low_dim_v15.hdf5"
+    args.dataset_path = f"/app/robomimic/datasets/lift/low_dim_v15{dataset_suffix}.hdf5"
 elif args.dataset == "can":
-    args.dataset_path = "/app/robomimic/datasets/can/img/can_feat.hdf5"
+    args.dataset_path = f"/app/robomimic/datasets/can/can_feats{dataset_suffix}.hdf5"
 elif args.dataset == "square":
-    args.dataset_path = "/app/robomimic/datasets/square/img/square_feat.hdf5"
+    args.dataset_path = f"/app/robomimic/datasets/square/square_feats{dataset_suffix}.hdf5"
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
@@ -57,17 +89,33 @@ with config.values_unlocked():
     # Set output directory for results
     base_dir = os.path.expanduser(args.output_dir)
     base_dir = os.path.join(base_dir, args.dataset)
+
+    # Convert to absolute path to avoid issues with relative paths
+    abs_base_dir = os.path.abspath(os.path.join("robomimic", base_dir))
+    
+    # search the output directory for existing experiments to set experiment name
+    exp_num = 0
+    print(f"Checking existing experiments in {abs_base_dir} to set experiment name...")
+    if os.path.exists(abs_base_dir):
+        print("Found existing base directory.")
+        all_items = os.listdir(abs_base_dir)
+        print(f"All items in directory: {all_items}")
+        existing_experiments = [d for d in all_items if os.path.isdir(os.path.join(abs_base_dir, d)) and d.startswith("exp")]
+        print(f"Filtered experiment directories: {existing_experiments}")
+        if existing_experiments:
+            print(f"Found existing experiments: {existing_experiments}")
+            # Extract numbers from experiment folder names (e.g., "exp0" -> 0, "exp1" -> 1)
+            exp_numbers = []
+            for exp_dir in existing_experiments:
+                try:
+                    num = int(exp_dir.replace("exp", ""))
+                    exp_numbers.append(num)
+                except ValueError:
+                    continue
+            if exp_numbers:
+                exp_num = max(exp_numbers) + 1
+
     config.train.output_dir = base_dir
-
-    # Search the output directory for existing experiments to set experiment name
-    try:
-        existing_exps = [d for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d)) and d.startswith("exp")]
-        exp_nums = [int(d.split("exp")[-1]) for d in existing_exps if d.split("exp")[-1].isdigit()]
-        exp_num = max(exp_nums) + 1 if exp_nums else 1
-    except FileNotFoundError:
-        exp_num = 1
-
-    config.experiment.name = f"exp{exp_num}"
 
     # Configure observation keys
     config.observation.modalities.obs.low_dim = [
@@ -120,10 +168,16 @@ with config.values_unlocked():
     
     # Save checkpoints
     config.experiment.save.enabled = True
-    config.experiment.save.every_n_epochs = 10
+    config.experiment.save.every_n_epochs = args.save_freq
+    
+    # Set experiment name with dataset portion, epochs, and save frequency
+    config.experiment.name = f"{portion_prefix}_{args.num_epochs}_{args.save_freq}_exp{exp_num}"
     
     # Validation settings (disable to keep it simple for now)
     config.experiment.validate = False 
+
+    # Rollout settings
+    config.experiment.rollout.enabled = False 
 
 # Print config to verify
 print("Training Configuration:")
