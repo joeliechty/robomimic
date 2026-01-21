@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument(
         "--num_epochs", "-E",
         type=int,
-        default=2000,
+        default=500,
         help="number of training epochs"
     )
     parser.add_argument(
@@ -120,7 +120,7 @@ with config.values_unlocked():
     
     # Save checkpoints
     config.experiment.save.enabled = True
-    config.experiment.save.every_n_epochs = 50
+    config.experiment.save.every_n_epochs = 10
     
     # Validation settings (disable to keep it simple for now)
     config.experiment.validate = False 
