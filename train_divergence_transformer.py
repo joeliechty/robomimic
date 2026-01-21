@@ -146,11 +146,11 @@ print("Applied BC_Transformer monkey-patch for process_batch_for_training (CDM)"
 args = parse_args()
 
 if args.dataset == "lift":
-    args.dataset_path = "/app/robomimic/datasets/lift/ph/low_dim_v15_w_cdm.hdf5"
+    args.dataset_path = "dataset/lift/low_dim_v15_w_cdm.hdf5"
 elif args.dataset == "can":
-    args.dataset_path = "/app/robomimic/datasets/can/img/can_feat_w_cdm.hdf5"
+    args.dataset_path = "dataset/can/can_feat_w_cdm.hdf5"
 elif args.dataset == "square":
-    args.dataset_path = "/app/robomimic/datasets/square/img/square_feat_w_cdm.hdf5"
+    args.dataset_path = "dataset/square/square_feat_w_cdm.hdf5"
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
