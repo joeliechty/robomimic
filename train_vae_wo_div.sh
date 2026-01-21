@@ -21,7 +21,7 @@ docker run -d \
   -v $(pwd):/app/robomimic \
   -w /app/robomimic \
   robomimic \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_vae.py -D ${DATASET} -E 2000"
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_vae.py -D ${DATASET} -E 500"
 
 echo "Waiting 20s to prevent experiment ID collision..."
 sleep 20

@@ -29,7 +29,7 @@ python eval_model.py \
   -t ${TASK} \
   -e ${EXP_NUM} \
   -p 1000 \
-  -n 50 \
+  -n 2 \
   -s ${SEED} \
   --video \
   --save_data

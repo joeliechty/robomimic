@@ -248,9 +248,13 @@ def main():
     # Add video recording if requested
     if args.video:
         video_dir = "eval_videos"
+        if not args.divergence:
+            video_dir = os.path.join(video_dir, "no_divergence")
+        else:
+            video_dir = os.path.join(video_dir, "divergence")
         os.makedirs(video_dir, exist_ok=True)
         
-        video_filename = f"{args.model}_{args.task}_exp{args.exp}_epoch{epoch_str}_seed{args.seed}.mp4"
+        video_filename = f"{args.model}_{args.task}_exp{args.exp}_{epoch_str}_seed{args.seed}.mp4"
         video_path = os.path.join(video_dir, video_filename)
         
         eval_args.video_path = video_path
@@ -263,9 +267,13 @@ def main():
     # Add data recording if requested (this also saves stats JSON)
     if args.save_data:
         data_dir = "eval_data"
+        if not args.divergence:
+            data_dir = os.path.join(data_dir, "no_divergence")
+        else:
+            data_dir = os.path.join(data_dir, "divergence")
         os.makedirs(data_dir, exist_ok=True)
         
-        data_filename = f"{args.model}_{args.task}_exp{args.exp}_epoch{epoch_str}_seed{args.seed}.hdf5"
+        data_filename = f"{args.model}_{args.task}_exp{args.exp}_{epoch_str}_seed{args.seed}.hdf5"
         data_path = os.path.join(data_dir, data_filename)
         stats_path = data_path.replace(".hdf5", "_stats.json")
         
