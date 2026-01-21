@@ -143,9 +143,44 @@ def parse_args():
     parser.add_argument("--use_image_feats", "-IF", action='store_true', default=False)
     parser.add_argument("--use_divergence_loss", "-CDM", action='store_true')
     parser.add_argument("--div_loss_weight", "-L", type=float, default=0.01)
+    parser.add_argument(
+        "--dataset_portion","-DP",
+        type=str,
+        default="full",
+        choices=["full", "half", "quarter"],
+        help="dataset portion: 'full', 'half', or 'quarter'"
+    )
+    parser.add_argument(
+        "--portion_id","-PI",
+        type=int,
+        default=1,
+        help="which portion (1-2 for half, 1-4 for quarter, ignored for full)"
+    )
+    parser.add_argument(
+        "--save_freq","-SF",
+        type=int,
+        default=3,
+        help="save checkpoint every N epochs"
+    )
+    parser.add_argument(
+        "--epochs","-E",
+        type=int,
+        default=200,
+        help="number of training epochs"
+    )
     return parser.parse_args()
 
 args = parse_args()
+
+if args.dataset_portion == "full":
+    portion_prefix = "F"
+elif args.dataset_portion == "half":
+    portion_prefix = f"H{args.portion_id}"
+elif args.dataset_portion == "quarter":
+    portion_prefix = f"Q{args.portion_id}"
+else:
+    portion_prefix = "F"
+
 config = config_factory(algo_name="bc", image_feats=args.use_image_feats)
 
 with config.values_unlocked():
@@ -168,12 +203,15 @@ with config.values_unlocked():
     
     config.algo.loss.cdm_weight = args.div_loss_weight if args.use_divergence_loss else 0.0
     config.train.batch_size = 256  
-    config.train.num_epochs = 200
+    config.train.num_epochs = args.epochs
     
    
     config.experiment.rollout.enabled = False
     config.experiment.save.enabled = True
-    config.experiment.save.every_n_epochs = 3
+    config.experiment.save.every_n_epochs = args.save_freq
+    
+    # Set experiment name with dataset portion, epochs, and save frequency
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}"
     
    
     config.experiment.render_video = False
