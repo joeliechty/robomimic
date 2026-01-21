@@ -6,6 +6,37 @@ from robomimic.scripts.train import train
 import robomimic.algo.bc as bc
 import argparse
 import robomimic.utils.tensor_utils as TensorUtils
+import h5py
+
+def sync_all_attributes(source_path, target_path):
+    print(f"Syncing attributes from {source_path} to {target_path}...")
+    
+    with h5py.File(source_path, 'r') as f_src, h5py.File(target_path, 'a') as f_tgt:
+        # 1. Sync global /data attributes (env_args, etc.)
+        if "data" in f_src and "data" in f_tgt:
+            for k, v in f_src["data"].attrs.items():
+                f_tgt["data"].attrs[k] = v
+            print("  [OK] Global 'data' attributes synced.")
+
+        # 2. Sync per-demo attributes (num_samples, model_file, etc.)
+        demos = [k for k in f_src["data"].keys() if k.startswith("demo_")]
+        for demo in demos:
+            if demo in f_tgt["data"]:
+                for k, v in f_src[f"data/{demo}"].attrs.items():
+                    f_tgt[f"data/{demo}"].attrs[k] = v
+            else:
+                print(f"  [Warning] {demo} found in source but not in target. Skipping.")
+        
+        print(f"  [OK] Attributes for {len(demos)} demos synced.")
+
+# Update these paths to your actual local file locations
+source = "dataset/can/can_demo.hdf5"
+target = "dataset/can/can_feats_w_cdm.hdf5"
+
+if os.path.exists(source) and os.path.exists(target):
+    sync_all_attributes(source, target)
+else:
+    print("Check your file paths!")
 
 # add arguements for use_divergence_loss, div_loss_weight, dataset_path
 def parse_args():
@@ -32,6 +63,11 @@ def parse_args():
         type=int,
         default=200,
         help="number of training epochs"
+    )
+    parser.add_argument(
+        "--use_images", "-I",
+        action='store_true',
+        help="set this flag to include image observations"
     )
     return parser.parse_args()
 
@@ -148,7 +184,7 @@ args = parse_args()
 if args.dataset == "lift":
     args.dataset_path = "dataset/lift/low_dim_v15_w_cdm.hdf5"
 elif args.dataset == "can":
-    args.dataset_path = "dataset/can/can_feat_w_cdm.hdf5"
+    args.dataset_path = "dataset/can/can_feats_w_cdm.hdf5"
 elif args.dataset == "square":
     args.dataset_path = "dataset/square/square_feat_w_cdm.hdf5"
 else:
@@ -172,12 +208,14 @@ with config.values_unlocked():
     base_dir = "./exps/results/bc_rss/transformer"
     if args.use_divergence_loss:
         base_dir += "_divergence"
+        if args.use_images:
+            base_dir += "_images"
         cdm_weight = args.div_loss_weight
-        print(f"CDM Loss ENABLED with weight: {cdm_weight}")
+        print(f"CDM Loss ENABLED with weight: {cdm_weight}, Images: {args.use_images} ")
     else:
         base_dir += "_no_divergence"
         cdm_weight = 0.0
-        print(f"CDM Loss DISABLED (weight: {cdm_weight})")
+        print(f"CDM Loss DISABLED (weight: {cdm_weight}), Images: {args.use_images} ")
     
     base_dir = os.path.join(base_dir, args.dataset)
 
@@ -218,7 +256,10 @@ with config.values_unlocked():
         "robot0_gripper_qpos",
         "object",
     ]
-    
+    if args.use_images:
+        config.observation.modalities.obs.low_dim.append("robot0_eye_in_hand_feats")
+        config.observation.modalities.obs.rgb = []
+
     # Enable Transformer architecture
     config.algo.rnn.enabled = False
     config.algo.transformer.enabled = True
@@ -241,10 +282,11 @@ with config.values_unlocked():
     
     # Save checkpoints
     config.experiment.save.enabled = True
-    config.experiment.save.every_n_epochs = 10
+    config.experiment.save.every_n_epochs = 5
     
     # Validation settings (disable to keep it simple for now)
     config.experiment.validate = False 
+    config.experiment.rollout.enabled = False
 
 # Print config to verify
 print("Training Configuration:")

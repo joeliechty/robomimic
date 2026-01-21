@@ -6,6 +6,10 @@ tests/assets/test.hdf5
 tests/assets/test_v141.hdf5
 tests/assets/test_v15.hdf5
 
+# Docker
+Dockerfile
+run_docker.sh
+
 # pycharm configs
 .idea/
 
@@ -127,7 +131,7 @@ macros_private.py
 
 # datasets
 datasets/*
-
+dataset/*
 # traj playback
 playback/*
 
