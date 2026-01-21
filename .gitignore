@@ -122,6 +122,9 @@ venv.bak/
 .mypy_cache/
 *.mp4
 *.pth
+*.png
+*.jpg
+*.jpeg
 
 # private macros
 macros_private.py
@@ -134,5 +137,7 @@ playback/*
 
 # exp results
 robomimic/exps/results/*
+exps/results/*
 robomimic/bc_divergence_results/*
-evals/*
+eval*/
+
