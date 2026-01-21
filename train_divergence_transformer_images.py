@@ -30,8 +30,8 @@ def sync_all_attributes(source_path, target_path):
         print(f"  [OK] Attributes for {len(demos)} demos synced.")
 
 # Update these paths to your actual local file locations
-source = "dataset/can/can_demo.hdf5"
-target = "dataset/can/can_feats_w_cdm.hdf5"
+source = "dataset/square/square_demo.hdf5"
+target = "dataset/square/square_feats_w_cdm.hdf5"
 
 if os.path.exists(source) and os.path.exists(target):
     sync_all_attributes(source, target)
@@ -186,7 +186,7 @@ if args.dataset == "lift":
 elif args.dataset == "can":
     args.dataset_path = "dataset/can/can_feats_w_cdm.hdf5"
 elif args.dataset == "square":
-    args.dataset_path = "dataset/square/square_feat_w_cdm.hdf5"
+    args.dataset_path = "dataset/square/square_feats_w_cdm.hdf5"
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
