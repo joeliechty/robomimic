@@ -18,14 +18,27 @@ EPOCHS=$4
 SAVE_FREQ=$5
 
 # Launch Transformer Baseline (No Divergence)
-docker run -d \
-  --name train_transformer_base_${DATASET}_${PORTION}_${PORTION_ID}_${EPOCHS}_${SAVE_FREQ} \
-  --gpus all \
-  --net=host \
-  -v $(pwd):/app/robomimic \
-  -w /app/robomimic \
-  robomimic \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ}"
+if [ "$DATASET" = "can" ] || [ "$DATASET" = "square" ]; then
+  # Use image-based training for can and square datasets
+  docker run -d \
+    --name train_transformer_base_${DATASET}_${PORTION}_${PORTION_ID}_${EPOCHS}_${SAVE_FREQ} \
+    --gpus all \
+    --net=host \
+    -v $(pwd):/app/robomimic \
+    -w /app/robomimic \
+    robomimic \
+    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ}"
+else
+  # Use standard training for other datasets (e.g., lift)
+  docker run -d \
+    --name train_transformer_base_${DATASET}_${PORTION}_${PORTION_ID}_${EPOCHS}_${SAVE_FREQ} \
+    --gpus all \
+    --net=host \
+    -v $(pwd):/app/robomimic \
+    -w /app/robomimic \
+    robomimic \
+    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ}"
+fi
 
 echo "Waiting 20s to prevent experiment ID collision..."
 sleep 20
