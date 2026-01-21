@@ -8,6 +8,9 @@ from robomimic.utils.tf_utils import compute_twist_between_poses, add_twist_to_p
 import matplotlib.pyplot as plt
 from scipy.signal import savgol_filter
 from torch.func import jvp
+import time
+import json
+import os
 
 warnings.filterwarnings('ignore', message='logm result may be inaccurate')
 
@@ -845,27 +848,27 @@ def add_div_and_score_to_training_data(load_path, save_path=None, verbose=True, 
         print(f"\nMapping divergence and score back to original demo time steps:")
     data = _unbin_data(data, demo_tensor_keys, div_ee, score_ee, nan_mask)
     
-    # Verify unbinning by checking a few demos
-    for demo_key in data['demos'][:3]:
-        print("\n" + "-"*40)
-        print(f"\n    Divergence stats for demo '{demo_key}':")
-        if 'divergence' in data[demo_key]:
-            div_twist_demo = data[demo_key]['divergence']
-            valid_div_demo = div_twist_demo[~torch.isnan(div_twist_demo)]
-            print(f"    {demo_key}: shape={div_twist_demo.shape}, valid={valid_div_demo.shape[0]}/{div_twist_demo.numel()}")
-            if valid_div_demo.numel() > 0:
-                print(f"      stats (min/mean/max): {valid_div_demo.min():.4f}/{valid_div_demo.mean():.4f}/{valid_div_demo.max():.4f}")
+    # # Verify unbinning by checking a few demos
+    # for demo_key in data['demos'][:3]:
+    #     print("\n" + "-"*40)
+    #     print(f"\n    Divergence stats for demo '{demo_key}':")
+    #     if 'divergence' in data[demo_key]:
+    #         div_twist_demo = data[demo_key]['divergence']
+    #         valid_div_demo = div_twist_demo[~torch.isnan(div_twist_demo)]
+    #         print(f"    {demo_key}: shape={div_twist_demo.shape}, valid={valid_div_demo.shape[0]}/{div_twist_demo.numel()}")
+    #         if valid_div_demo.numel() > 0:
+    #             print(f"      stats (min/mean/max): {valid_div_demo.min():.4f}/{valid_div_demo.mean():.4f}/{valid_div_demo.max():.4f}")
         
-        print(f"\n    Score stats per component:")
-        if 'score' in data[demo_key]:
-            score_twist_demo = data[demo_key]['score']
-            valid_score_demo = score_twist_demo[~torch.isnan(score_twist_demo).any(dim=1)]
-            print(f"    {demo_key}: shape={score_twist_demo.shape}, valid={valid_score_demo.shape[0]}/{score_twist_demo.shape[0]}")
-            if valid_score_demo.numel() > 0:
-                print(f"      stats (min/mean/max) per component:")
-                for i in range(score_twist_demo.shape[1]):
-                    comp = valid_score_demo[:, i]
-                    print(f"        Component {i}: {comp.min():.4f}/{comp.mean():.4f}/{comp.max():.4f}")
+    #     print(f"\n    Score stats per component:")
+    #     if 'score' in data[demo_key]:
+    #         score_twist_demo = data[demo_key]['score']
+    #         valid_score_demo = score_twist_demo[~torch.isnan(score_twist_demo).any(dim=1)]
+    #         print(f"    {demo_key}: shape={score_twist_demo.shape}, valid={valid_score_demo.shape[0]}/{score_twist_demo.shape[0]}")
+    #         if valid_score_demo.numel() > 0:
+    #             print(f"      stats (min/mean/max) per component:")
+    #             for i in range(score_twist_demo.shape[1]):
+    #                 comp = valid_score_demo[:, i]
+    #                 print(f"        Component {i}: {comp.min():.4f}/{comp.mean():.4f}/{comp.max():.4f}")
 
     if verbose:
         print(f"\nFinished computing divergence and score for all demos.")
@@ -875,6 +878,8 @@ def add_div_and_score_to_training_data(load_path, save_path=None, verbose=True, 
     if verbose:
         print(f"\nSaving updated data structure to: {save_path}")
     _save_data_structure(data, save_path)
+
+    return data
     
 def load_and_checkdivergence_and_score(hdf5_path, verbose=True):
     """
@@ -1895,6 +1900,73 @@ def test_and_visualize(args):
                     comp = valid_score_demo[:, i]
                     print(f"        Component {i}: {comp.min():.4f}/{comp.mean():.4f}/{comp.max():.4f}")
 
+def split_dataset(dataset, n_parts=2):
+    """
+    Loads the dataset and splits it evenly into n_parts sub-datasets. Then saves these new datasets with different names (Q1-4 for quarters and H1-2 for halves).
+    dataset: str, path to the original dataset
+    n_parts: int, number of parts to split the dataset into
+    """
+    import shutil
+    
+    if n_parts != 2 and n_parts != 4:
+        raise NotImplementedError("Only n_parts=2 and n_parts=4 are supported currently.")
+    
+    print(f"Loading dataset from {dataset}")
+    data = _load_training_data(dataset)
+    
+    all_demos = data['demos']
+    n_demos = len(all_demos)
+    demos_per_part = n_demos // n_parts
+    
+    print(f"Total demos: {n_demos}")
+    print(f"Splitting into {n_parts} parts with ~{demos_per_part} demos each")
+    
+    # Determine suffix naming
+    if n_parts == 2:
+        suffixes = ['H1', 'H2']
+    else:  # n_parts == 4
+        suffixes = ['Q1', 'Q2', 'Q3', 'Q4']
+    
+    # Split demos into parts
+    for part_idx in range(n_parts):
+        start_idx = part_idx * demos_per_part
+        if part_idx == n_parts - 1:
+            # Last part gets any remaining demos
+            end_idx = n_demos
+        else:
+            end_idx = (part_idx + 1) * demos_per_part
+        
+        part_demos = all_demos[start_idx:end_idx]
+        suffix = suffixes[part_idx]
+        
+        # Create output path
+        if '.' in dataset:
+            save_path = dataset.rsplit('.', 1)[0] + f"_{suffix}." + dataset.rsplit('.', 1)[1]
+        else:
+            save_path = dataset + f"_{suffix}"
+        
+        print(f"\nCreating {suffix} with {len(part_demos)} demos: {save_path}")
+        
+        # Copy original file to new location
+        data['data'].close()
+        shutil.copy2(dataset, save_path)
+        
+        # Open new file and remove demos not in this part
+        with h5py.File(save_path, 'r+') as f_new:
+            demos_to_remove = [d for d in all_demos if d not in part_demos]
+            for demo_key in demos_to_remove:
+                if demo_key in f_new['data']:
+                    del f_new['data'][demo_key]
+            
+            print(f"  Kept demos: {list(f_new['data'].keys())[:3]}... (showing first 3)")
+            print(f"  Total demos in {suffix}: {len(list(f_new['data'].keys()))}")
+        
+        # Reopen original file
+        data['data'] = h5py.File(dataset, 'r')
+    
+    data['data'].close()
+    print(f"\nDataset split complete!")
+    
 
 if __name__ == "__main__":
     """
@@ -1907,20 +1979,73 @@ if __name__ == "__main__":
     parser.add_argument("--dataset", type=str, required=True, help="Path to HDF5 dataset")
     parser.add_argument("--demo", type=str, default="demo_0", help="Demo key to inspect")
     parser.add_argument("--test", action='store_true', help="Whether to test divergence computation")
+    parser.add_argument("--split", type=int, default=0, help="If >0, splits the dataset into N parts")
     args = parser.parse_args()
     
-    if args.test:
-        test_and_visualize(args)
+    if args.split > 0:
+        split_dataset(args.dataset, n_parts=args.split)
 
     else:
-        add_div_and_score_to_training_data(args.dataset)
+        if args.test:
+            test_and_visualize(args)
 
-        save_path = args.dataset
-        # add "_w_div" suffix to filename before the extension
-        if '.' in args.dataset:
-            save_path = args.dataset.rsplit('.', 1)[0] + "_w_cdm." + args.dataset.rsplit('.', 1)[1]
         else:
-            save_path = args.dataset + "_w_cdm"
+            # Get trajectory length stats before processing (file will be closed after)
+            print(f"Loading dataset to get trajectory stats...")
+            data_temp = _load_training_data(args.dataset, verbose=False)
+            n_actions = []
+            for demo_key in data_temp['demos']:
+                actions = data_temp['get_actions'](demo_key)
+                n_actions.append(len(actions))
+            n_demos = len(data_temp['demos'])
+            mean_n_actions = np.mean(n_actions)
+            std_n_actions = np.std(n_actions)
+            min_n_actions = np.min(n_actions)
+            max_n_actions = np.max(n_actions)
+            median_n_actions = np.median(n_actions)
+            data_temp['data'].close()  # Close file before processing
+            
+            # Measure wall clock time for divergence and score computation
+            start_time = time.time()
+            add_div_and_score_to_training_data(args.dataset)
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            
+            # Save timing information to file
+            time_path = args.dataset
+            if '.' in args.dataset:
+                time_path = args.dataset.rsplit('.', 1)[0] + "_time.json"
+            else:
+                time_path = args.dataset + "_time.json"
+            
+            time_data = {
+                "method": "kNN",
+                "elapsed_time_ms": elapsed_time * 1000.0,
+                "elapsed_time_seconds": elapsed_time,
+                "elapsed_time_minutes": elapsed_time / 60.0,
+                "dataset_path": args.dataset,
+                "n_demos": n_demos,
+                "trajectory_length_stats": {
+                    "mean": float(mean_n_actions),
+                    "std": float(std_n_actions),
+                    "min": int(min_n_actions),
+                    "max": int(max_n_actions),
+                    "median": float(median_n_actions)
+                }
+            }
+            
+            with open(time_path, 'w') as f:
+                json.dump(time_data, f, indent=2)
+            
+            print(f"\nDivergence and score computation took {elapsed_time:.2f} seconds ({elapsed_time/60.0:.2f} minutes)")
+            print(f"Timing information saved to: {time_path}")
 
-        load_and_checkdivergence_and_score(save_path)
+            save_path = args.dataset
+            # add "_w_div" suffix to filename before the extension
+            if '.' in args.dataset:
+                save_path = args.dataset.rsplit('.', 1)[0] + "_w_cdm." + args.dataset.rsplit('.', 1)[1]
+            else:
+                save_path = args.dataset + "_w_cdm"
+
+            load_and_checkdivergence_and_score(save_path)
 
