@@ -19,6 +19,24 @@ from robomimic.scripts.run_trained_agent import run_trained_agent
 import robomimic.algo.bc as bc
 import robomimic.utils.tensor_utils as TensorUtils
 
+# --- Logging utility to save console output to file ---
+class Logger:
+    """Tee-like class that writes to both stdout and a file."""
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, 'w')
+    
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+    
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+    
+    def close(self):
+        self.log.close()
+
 # --- Monkey-patch for observation history buffering during rollout ---
 def get_action_with_history(self, obs_dict, goal_dict=None):
     assert not self.nets.training
@@ -361,6 +379,7 @@ def main():
         eval_args.camera_names = ["agentview"]
     
     # Add data recording if requested (this also saves stats JSON)
+    logger = None
     if args.save_data:
         data_dir = "eval_data"
         if not args.divergence:
@@ -372,10 +391,16 @@ def main():
         data_filename = f"{name_prefix}_{epoch_str}_seed{args.seed}.hdf5"
         data_path = os.path.join(data_dir, data_filename)
         stats_path = data_path.replace(".hdf5", "_stats.json")
+        log_path = data_path.replace(".hdf5", "_log.txt")
         
         eval_args.dataset_path = data_path
         print(f"Will save data to: {data_path}")
         print(f"Will save stats to: {stats_path}")
+        print(f"Will save logs to: {log_path}")
+        
+        # Redirect stdout to both console and log file
+        logger = Logger(log_path)
+        sys.stdout = logger
     else:
         eval_args.dataset_path = None
     
@@ -383,7 +408,13 @@ def main():
     print("\nRunning evaluation...")
     sys.stdout.flush()
     
-    run_trained_agent(eval_args)
+    try:
+        run_trained_agent(eval_args)
+    finally:
+        # Restore stdout and close log file
+        if logger is not None:
+            sys.stdout = logger.terminal
+            logger.close()
 
 if __name__ == "__main__":
     main()
