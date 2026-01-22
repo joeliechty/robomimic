@@ -3,9 +3,9 @@
 Convenient script for evaluating trained models from the experiments.
 
 Usage:
-    python eval_model.py --model transformer --task lift --exp 0 --epoch 150
-    python eval_model.py --model diffusion --task lift --exp 1 --epoch 100
-    python eval_model.py --model transformer --task lift --exp 0 --epoch 150 --video
+    python3 eval_model.py -M transformer -T lift -DS F -TE 500 -SF 20 -EE 160 -V -SD
+This will evaluate the transformer model trained on the full lift dataset for 500 epochs,
+saving the video and data for epoch 160, using the default 50 rollouts and seed 0.
 """
 
 import argparse
@@ -80,15 +80,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate trained robomimic models")
     
     parser.add_argument(
-        "--model", "-m",
+        "--model", "-M",
         type=str,
         required=True,
-        choices=["transformer", "mlp", "diffusion", "vae"],
-        help="Model type: transformer (no divergence), transformer_cdm (with divergence), or diffusion"
+        choices=["transformer", "mlp", "diffusion", "diffusion_policy", "vae"],
+        help="Model type: transformer, vae, diffusion, or diffusion_policy"
     )
     
     parser.add_argument(
-        "--task", "-t",
+        "--task", "-T",
         type=str,
         required=True,
         choices=["lift", "can", "square"],
@@ -96,90 +96,162 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--divergence", "-d",
+        "--divergence", "-CDM",
         action="store_true",
         help="Use divergence model"
     )
     
     parser.add_argument(
-        "--exp", "-e",
-        type=int,
-        required=True,
-        help="Experiment number (e.g., 0 for exp0)"
+        "--images", "-I",
+        action="store_true",
+        help="Model trained with images"
     )
     
     parser.add_argument(
-        "--epoch", "-p",
+        "--dataset_size", "-DS",
+        type=str,
+        required=True,
+        choices=["F", "H1", "H2", "Q1", "Q2", "Q3", "Q4"],
+        help="Dataset size: F (full), H1/H2 (half), Q1-Q4 (quarter)"
+    )
+    
+    parser.add_argument(
+        "--training_epochs", "-TE",
+        type=int,
+        required=True,
+        help="Number of training epochs (e.g., 500, 1000)"
+    )
+    
+    parser.add_argument(
+        "--save_freq", "-SF",
+        type=int,
+        required=True,
+        help="Model save frequency during training (e.g., 5, 20)"
+    )
+    
+    parser.add_argument(
+        "--eval_epoch", "-EE",
         type=int,
         default=None,
         help="Specific epoch to evaluate. If not provided, will use 'last.pth'"
     )
     
     parser.add_argument(
-        "--n_rollouts", "-n",
+        "--n_rollouts", "-ROLL",
         type=int,
         default=50,
         help="Number of evaluation rollouts (default: 50)"
     )
     
     parser.add_argument(
-        "--seed", "-s",
+        "--seed", "-S",
         type=int,
         default=0,
         help="Random seed for evaluation (default: 0)"
     )
     
     parser.add_argument(
-        "--video", "-v",
+        "--video", "-V",
         action="store_true",
         help="Save evaluation video"
     )
     
     parser.add_argument(
-        "--save_data",
+        "--save_data", "-SD",
         action="store_true",
         help="Save rollout data (.hdf5) and stats (.json)"
     )
     
     parser.add_argument(
-        "--horizon",
+        "--horizon", "-H",
         type=int,
         default=400,
         help="Maximum horizon for rollouts (default: 400)"
     )
     
     parser.add_argument(
-        "--camera_names",
+        "--camera_names", "-CAMS",
         type=str,
         nargs='+',
         default=["agentview"],
         help="Camera names for video rendering"
     )
+
+    # legacy experiment number argument
+    parser.add_argument(
+        "--exp",
+        type=int,
+        default=None,
+        help="[Legacy] Experiment number for old naming convention"
+    )
     
     return parser.parse_args()
 
-def find_model_path(model_type, divergence, task, exp_num, epoch=None):
-    """Find the path to the trained model checkpoint."""
+def find_model_path(model_type, divergence, images, task, dataset_size, training_epochs, save_freq, epoch=None, exp_num=None):
+    """Find the path to the trained model checkpoint.
     
-    # Determine base directory based on model type
-    if model_type == "diffusion":
-        base_dir = "robomimic/exps/results/bc_rss/diffusion_policy"
+    Args:
+        model_type: transformer, vae, diffusion, or diffusion_policy
+        divergence: whether model uses divergence
+        images: whether model is trained with images
+        task: lift, can, or square
+        dataset_size: F, H1, H2, Q1-Q4
+        training_epochs: number of training epochs (e.g., 500, 1000)
+        save_freq: model save frequency (e.g., 5, 20)
+        epoch: specific epoch to evaluate
+        exp_num: [Legacy] experiment number for old naming convention
+
+    Returns:
+        model_path: path to the model checkpoint file
+    """
+    
+    # Handle legacy exp_num format for backward compatibility
+    if exp_num is not None:
+        # Old format: exp{exp_num}
+        if model_type == "diffusion":
+            base_dir = "robomimic/exps/results/bc_rss/diffusion_policy"
+        else:
+            if model_type == "mlp":
+                base_dir = "robomimic/exps/results/bc_rss/mlp"
+            elif model_type == "transformer":
+                base_dir = "robomimic/exps/results/bc_rss/transformer"
+            elif model_type == "vae":
+                base_dir = "robomimic/exps/results/bc_rss/vae"
+            else:
+                raise ValueError(f"Unknown model type: {model_type}")
+            if divergence:
+                base_dir += "_divergence"
+            else:
+                base_dir += "_no_divergence"
+        
+        exp_dir = os.path.join(base_dir, task, f"exp{exp_num}")
     else:
-        if model_type == "mlp":
-            base_dir = "robomimic/exps/results/bc_rss/mlp"
+        # New format: {dataset_size}_{training_epochs}_{save_freq}
+        # Determine base directory based on model type
+        if model_type in ["diffusion", "diffusion_policy"]:
+            model_dir_name = "diffusion_policy"
+        elif model_type == "mlp":
+            model_dir_name = "mlp"
         elif model_type == "transformer":
-            base_dir = "robomimic/exps/results/bc_rss/transformer"
+            model_dir_name = "transformer"
         elif model_type == "vae":
-            base_dir = "robomimic/exps/results/bc_rss/vae"
+            model_dir_name = "vae"
         else:
             raise ValueError(f"Unknown model type: {model_type}")
+        
+        # Add divergence suffix
         if divergence:
-            base_dir += "_divergence"
+            model_dir_name += "_divergence"
         else:
-            base_dir += "_no_divergence"
-    
-    # Construct path
-    exp_dir = os.path.join(base_dir, task, f"exp{exp_num}")
+            model_dir_name += "_no_divergence"
+        
+        # Add images suffix if applicable
+        if images:
+            model_dir_name += "_images"
+        
+        base_dir = f"robomimic/exps/results/bc_rss/{model_dir_name}"
+        exp_folder = f"{dataset_size}_{training_epochs}_{save_freq}"
+        exp_dir = os.path.join(base_dir, task, exp_folder)
     
     if not os.path.exists(exp_dir):
         print(f"Error: Experiment directory not found: {exp_dir}")
@@ -191,7 +263,8 @@ def find_model_path(model_type, divergence, task, exp_num, epoch=None):
         print(f"Error: No timestamp subdirectory found in {exp_dir}")
         sys.exit(1)
     
-    timestamp_dir = os.path.join(exp_dir, subdirs[0])
+    # Use the most recent timestamp if multiple exist
+    timestamp_dir = os.path.join(exp_dir, sorted(subdirs)[-1])
     
     # Find model checkpoint
     if epoch is None:
@@ -227,12 +300,35 @@ def main():
     args = parse_args()
     
     # Find model checkpoint
-    print(f"Looking for {args.model} model for task '{args.task}', experiment {args.exp}...")
-    model_path = find_model_path(args.model, args.divergence, args.task, args.exp, args.epoch)
+    if args.exp is not None:
+        print(f"Looking for {args.model} model for task '{args.task}', experiment {args.exp}...")
+        model_path = find_model_path(
+            args.model, args.divergence, args.images, args.task, 
+            None, None, None, args.eval_epoch, exp_num=args.exp
+        )
+    else:
+        divergence_str = "with divergence" if args.divergence else "without divergence"
+        images_str = "with images" if args.images else ""
+        print(f"Looking for {args.model} model {divergence_str} {images_str} for task '{args.task}'...")
+        print(f"  Dataset: {args.dataset_size}, Training epochs: {args.training_epochs}, Save freq: {args.save_freq}")
+        model_path = find_model_path(
+            args.model, args.divergence, args.images, args.task,
+            args.dataset_size, args.training_epochs, args.save_freq, args.eval_epoch
+        )
     print(f"Found model: {model_path}")
     
     # Build arguments for run_trained_agent
-    epoch_str = f"epoch{args.epoch}" if args.epoch is not None else "last"
+    epoch_str = f"epoch{args.eval_epoch}" if args.eval_epoch is not None else "last"
+    
+    # Build descriptive name for output files
+    if args.exp is not None:
+        # Legacy naming
+        name_prefix = f"{args.model}_{args.task}_exp{args.exp}"
+    else:
+        # New naming
+        divergence_tag = "div" if args.divergence else "nodiv"
+        images_tag = "_img" if args.images else ""
+        name_prefix = f"{args.model}_{args.task}_{args.dataset_size}_{args.training_epochs}_{args.save_freq}_{divergence_tag}{images_tag}"
     
     # Create argparse Namespace object to pass to run_trained_agent
     eval_args = argparse.Namespace()
@@ -254,7 +350,7 @@ def main():
             video_dir = os.path.join(video_dir, "divergence")
         os.makedirs(video_dir, exist_ok=True)
         
-        video_filename = f"{args.model}_{args.task}_exp{args.exp}_{epoch_str}_seed{args.seed}.mp4"
+        video_filename = f"{name_prefix}_{epoch_str}_seed{args.seed}.mp4"
         video_path = os.path.join(video_dir, video_filename)
         
         eval_args.video_path = video_path
@@ -273,7 +369,7 @@ def main():
             data_dir = os.path.join(data_dir, "divergence")
         os.makedirs(data_dir, exist_ok=True)
         
-        data_filename = f"{args.model}_{args.task}_exp{args.exp}_{epoch_str}_seed{args.seed}.hdf5"
+        data_filename = f"{name_prefix}_{epoch_str}_seed{args.seed}.hdf5"
         data_path = os.path.join(data_dir, data_filename)
         stats_path = data_path.replace(".hdf5", "_stats.json")
         
