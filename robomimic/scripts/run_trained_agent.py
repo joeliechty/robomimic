@@ -278,16 +278,25 @@ def run_trained_agent(args):
 
     rollout_stats = TensorUtils.list_of_flat_dict_to_dict_of_list(rollout_stats)
     
-    # Compute averages, but skip raw inference times (list of lists)
+    # Compute averages, but handle raw inference times separately
     avg_rollout_stats = {}
+    raw_inference_times = None
+    
     for k in rollout_stats:
         if k == "Inference_Time_Raw":
-            continue  # Skip raw times, can't average nested lists
+            # Save raw times as list of lists (one per rollout)
+            raw_inference_times = rollout_stats[k]
+            continue
         avg_rollout_stats[k] = np.mean(rollout_stats[k])
     
     avg_rollout_stats["Num_Success"] = np.sum(rollout_stats["Success_Rate"])
+    
+    # Add raw inference times to the output
+    if raw_inference_times is not None:
+        avg_rollout_stats["Inference_Time_Raw_Per_Rollout"] = raw_inference_times
+    
     print("Average Rollout Stats")
-    print(json.dumps(avg_rollout_stats, indent=4))
+    print(json.dumps({k: v for k, v in avg_rollout_stats.items() if k != "Inference_Time_Raw_Per_Rollout"}, indent=4))
 
     if args.dataset_path is not None:
         stats_path = os.path.splitext(args.dataset_path)[0] + "_stats.json"
