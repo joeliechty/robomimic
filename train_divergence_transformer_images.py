@@ -60,6 +60,18 @@ def parse_args():
         help="number of training epochs"
     )
     parser.add_argument(
+        "--output_dir", "-O",
+        type=str,
+        default="./exps/results/bc_rss/transformer",
+        help="directory to save results"
+    )
+    parser.add_argument(
+        "--batch_size", "-B",
+        type=int,
+        default=256,
+        help="training batch size"
+    )
+    parser.add_argument(
         "--use_images", "-I",
         action='store_true',
         help="set this flag to include image observations"
@@ -240,7 +252,7 @@ with config.values_unlocked():
         config.train.dataset_keys = ["actions", "rewards", "dones", "divergence", "score"]
     
     # Set output directory for results
-    base_dir = "./exps/results/bc_rss/transformer"
+    base_dir = args.output_dir
     if args.use_divergence_loss:
         base_dir += "_divergence"
         if args.use_images:
@@ -249,6 +261,8 @@ with config.values_unlocked():
         print(f"CDM Loss ENABLED with weight: {cdm_weight}, Images: {args.use_images} ")
     else:
         base_dir += "_no_divergence"
+        if args.use_images:
+            base_dir += "_images"
         cdm_weight = 0.0
         print(f"CDM Loss DISABLED (weight: {cdm_weight}), Images: {args.use_images} ")
     
@@ -309,7 +323,7 @@ with config.values_unlocked():
     config.algo.loss.cdm_weight = cdm_weight
 
     # Training settings
-    config.train.batch_size = 256
+    config.train.batch_size = args.batch_size
     config.train.num_epochs = args.epochs
     config.train.seq_length = 10  # Must match transformer.context_length
     config.train.cuda = torch.cuda.is_available()
