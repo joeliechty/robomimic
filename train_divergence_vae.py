@@ -16,7 +16,7 @@ def parse_args():
     parser.add_argument(
         "--div_loss_weight","-L",
         type=float,
-        default=0.01,
+        default=0.001,
         help="weight for divergence loss if used"
     )
     parser.add_argument(

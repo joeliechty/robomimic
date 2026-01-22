@@ -28,14 +28,8 @@ def sync_all_attributes(source_path, target_path):
         print(f"  [OK] Attributes for {len(demos)} demos synced.")
 
 # Update these paths to your actual local file locations
-source = "dataset/square/square_demo.hdf5"
-target = "dataset/square/square_feats_w_cdm.hdf5"
-
-if os.path.exists(source) and os.path.exists(target):
-    sync_all_attributes(source, target)
-else:
-    print("Check your file paths!")
-
+# source = "dataset/square/square_demo.hdf5"
+# target = "dataset/square/square_feats_w_cdm.hdf5"
 
 # add arguements for use_divergence_loss, div_loss_weight, dataset_path
 def parse_args():
@@ -48,7 +42,7 @@ def parse_args():
     parser.add_argument(
         "--div_loss_weight","-L",
         type=float,
-        default=0.01,
+        default=0.001,
         help="weight for divergence loss if used"
     )
     parser.add_argument(
@@ -64,26 +58,78 @@ def parse_args():
         help="number of training epochs"
     )
     parser.add_argument(
+        "--output_dir", "-O",
+        type=str,
+        default="./exps/results/bc_rss/vae",
+        help="directory to save results"
+    )
+    parser.add_argument(
+        "--batch_size", "-B",
+        type=int,
+        default=256,
+        help="training batch size"
+    )
+    parser.add_argument(
         "--use_images", "-I",
         action='store_true',
         help="set this flag to include image observations"
+    )
+    parser.add_argument(
+        "--dataset_portion","-DP",
+        type=str,
+        default="full",
+        choices=["full", "half", "quarter"],
+        help="dataset portion: 'full', 'half', or 'quarter'"
+    )
+    parser.add_argument(
+        "--portion_id","-PI",
+        type=int,
+        default=1,
+        help="which portion (1-2 for half, 1-4 for quarter, ignored for full)"
+    )
+    parser.add_argument(
+        "--save_freq","-SF",
+        type=int,
+        default=10,
+        help="save checkpoint every N epochs"
     )
     return parser.parse_args()
 
 
 args = parse_args()
 
+if args.dataset_portion == "full":
+    portion_prefix = "F"
+    dataset_suffix = ""
+elif args.dataset_portion == "half":
+    portion_prefix = f"H{args.portion_id}"
+    dataset_suffix = f"_H{args.portion_id}"
+elif args.dataset_portion == "quarter":
+    portion_prefix = f"Q{args.portion_id}"
+    dataset_suffix = f"_Q{args.portion_id}"
+else:
+    portion_prefix = "F"
+    dataset_suffix = ""
+
 if args.dataset == "lift":
-    args.dataset_path = "dataset/lift/low_dim_v15_w_cdm.hdf5"
+    target = f"/app/robomimic/datasets/lift/low_dim_v15{dataset_suffix}_w_cdm.hdf5"
 elif args.dataset == "can":
-    args.dataset_path = "dataset/can/can_feats_w_cdm.hdf5"
+    target = f"/app/robomimic/datasets/can/can_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"/app/robomimic/datasets/can/can_demo.hdf5"
 elif args.dataset == "square":
-    args.dataset_path = "dataset/square/square_feats_w_cdm.hdf5"
+    target = f"/app/robomimic/datasets/square/square_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"/app/robomimic/datasets/square/square_demo.hdf5"
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
+if args.dataset == "can" or args.dataset == "square":
+    if os.path.exists(source) and os.path.exists(target):
+        sync_all_attributes(source, target)
+    else:
+        print("Check your file paths!")
+
 # Path to your dataset with divergence info
-dataset_path = os.path.expanduser(args.dataset_path)
+dataset_path = os.path.expanduser(target)
 
 # Create default BC configuration
 config = config_factory(algo_name="bc")
@@ -93,7 +139,7 @@ with config.values_unlocked():
     config.train.data = dataset_path
 
     # Set output directory for results
-    base_dir = "./exps/results/bc_rss/vae"
+    base_dir = args.output_dir
     if args.use_divergence_loss:
         base_dir += "_divergence"
         if args.use_images:
@@ -102,6 +148,8 @@ with config.values_unlocked():
         print(f"CDM Loss ENABLED with weight: {cdm_weight}, Images: {args.use_images} ")
     else:
         base_dir += "_no_divergence"
+        if args.use_images:
+            base_dir += "_images"
         cdm_weight = 0.0
         print(f"CDM Loss DISABLED (weight: {cdm_weight}), Images: {args.use_images} ")
     
@@ -132,7 +180,7 @@ with config.values_unlocked():
             if exp_numbers:
                 exp_num = max(exp_numbers) + 1
 
-    config.experiment.name = f"exp{exp_num}"
+    # config.experiment.name = f"exp{exp_num}"
     config.train.output_dir = base_dir
 
     # Configure observation keys
@@ -177,14 +225,17 @@ with config.values_unlocked():
     config.algo.loss.cdm_weight = cdm_weight
 
     # Training settings
-    config.train.batch_size = 256
+    config.train.batch_size = args.batch_size
     config.train.num_epochs = args.epochs
     config.train.cuda = torch.cuda.is_available()
     
     # Save checkpoints
     config.experiment.save.enabled = True
-    config.experiment.save.every_n_epochs = 50
+    config.experiment.save.every_n_epochs = args.save_freq
     
+    # Set experiment name with dataset portion, epochs, and save frequency
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}" #_exp{exp_num}"
+
     # Validation settings (disable to keep it simple for now)
     config.experiment.validate = False 
     config.experiment.rollout.enabled = False
