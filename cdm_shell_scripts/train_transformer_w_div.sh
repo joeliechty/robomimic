@@ -29,7 +29,7 @@ if [ "$DATASET" = "can" ] || [ "$DATASET" = "square" ]; then
     -v $(pwd):/app/robomimic \
     -w /app/robomimic \
     robomimic \
-    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -CDM -L 0.0001 -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ}"
+    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -CDM -L 0.0001 -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -I"
 else
   # Use standard training for other datasets (e.g., lift)
   docker run -d \
