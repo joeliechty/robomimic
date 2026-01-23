@@ -23,17 +23,17 @@ SAVE_FREQ=$5
 if [ "$DATASET" = "can" ] || [ "$DATASET" = "square" ]; then
   # Use image-based training for can and square datasets
   docker run -d \
-    --name train_transformer_cdm_${DATASET}_${PORTION}_${PORTION_ID}_${EPOCHS}_${SAVE_FREQ} \
+    --name train_diffusion_base_${DATASET}_${PORTION}_${PORTION_ID}_${EPOCHS}_${SAVE_FREQ} \
     --gpus all \
     --net=host \
     -v $(pwd):/app/robomimic \
     -w /app/robomimic \
     robomimic \
-    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_diffusion_policy_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -I"
+    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_diffusion_policy_image.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -I"
 else
   # Use standard training for other datasets (e.g., lift)
   docker run -d \
-    --name train_transformer_cdm_${DATASET}_${PORTION}_${PORTION_ID}_${EPOCHS}_${SAVE_FREQ} \
+    --name train_diffusion_base_${DATASET}_${PORTION}_${PORTION_ID}_${EPOCHS}_${SAVE_FREQ} \
     --gpus all \
     --net=host \
     -v $(pwd):/app/robomimic \

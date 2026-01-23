@@ -1,13 +1,15 @@
-
 #!/bin/bash
 
 # Check if arguments were passed
 if [ -z "$1" ] || [ -z "$2" ]; then
   echo "Error: You must provide a dataset name, dataset portion, portion ID, number of epochs, and save frequency."
   echo "Usage: bash train_transformer_wo_div.sh <DATASET> <PORTION> <PORTION_ID> <EPOCHS> <SAVE_FREQ>"
-  echo "Example: bash train_transformer_w_div.sh lift full 0 500 20"
+  echo "Example: bash train_transformer_wo_div.sh lift full 0 500 20"
   echo "Datasets: lift, can, square"
   echo "Portions: full, half, quarter"
+  echo "Portion IDs: 0, 1, 2, ..."
+  echo "Epochs: number of training epochs"
+  echo "Save Frequency: how often to save the model (in epochs)"
   exit 1
 fi
 
