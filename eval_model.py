@@ -13,6 +13,7 @@ import os
 import sys
 from pathlib import Path
 import torch
+from tqdm import tqdm
 
 # Import the run_trained_agent function directly
 from robomimic.scripts.run_trained_agent import run_trained_agent
@@ -203,6 +204,27 @@ def parse_args():
         help="[Legacy] Experiment number for old naming convention"
     )
     
+    # Loop mode arguments
+    parser.add_argument(
+        "--loop", "-LOOP",
+        action="store_true",
+        help="Loop through all epochs from save_freq to training_epochs"
+    )
+    
+    parser.add_argument(
+        "--start_epoch", "-START",
+        type=int,
+        default=None,
+        help="Starting epoch for loop mode (default: save_freq)"
+    )
+    
+    parser.add_argument(
+        "--end_epoch", "-END",
+        type=int,
+        default=None,
+        help="Ending epoch for loop mode (default: training_epochs)"
+    )
+    
     return parser.parse_args()
 
 def find_model_path(model_type, divergence, images, task, dataset_size, training_epochs, save_freq, epoch=None, exp_num=None):
@@ -258,10 +280,11 @@ def find_model_path(model_type, divergence, images, task, dataset_size, training
             raise ValueError(f"Unknown model type: {model_type}")
         
         # Add divergence suffix
-        if divergence:
-            model_dir_name += "_divergence"
-        else:
-            model_dir_name += "_no_divergence"
+        if model_dir_name != "diffusion_policy":
+            if divergence:
+                model_dir_name += "_divergence"
+            else:
+                model_dir_name += "_no_divergence"
         
         # Add images suffix if applicable
         if images:
@@ -314,9 +337,12 @@ def find_model_path(model_type, divergence, images, task, dataset_size, training
     
     return model_path
 
-def main():
-    args = parse_args()
+def eval_single_model(args):
+    """Evaluate a single model checkpoint.
     
+    Args:
+        args: argparse.Namespace with evaluation arguments
+    """
     # Find model checkpoint
     if args.exp is not None:
         print(f"Looking for {args.model} model for task '{args.task}', experiment {args.exp}...")
@@ -416,5 +442,121 @@ def main():
             sys.stdout = logger.terminal
             logger.close()
 
+
+def eval_model_loop(args):
+    """Loop through multiple epochs and evaluate each checkpoint.
+    
+    Args:
+        args: argparse.Namespace with evaluation arguments including loop parameters
+    """
+    # Determine epoch range
+    start_epoch = args.start_epoch if args.start_epoch is not None else args.save_freq
+    end_epoch = args.end_epoch if args.end_epoch is not None else args.training_epochs
+    
+    # Validate epoch range
+    if start_epoch < args.save_freq:
+        print(f"Error: start_epoch ({start_epoch}) must be >= save_freq ({args.save_freq})")
+        sys.exit(1)
+    
+    if end_epoch > args.training_epochs:
+        print(f"Error: end_epoch ({end_epoch}) must be <= training_epochs ({args.training_epochs})")
+        sys.exit(1)
+    
+    if start_epoch > end_epoch:
+        print(f"Error: start_epoch ({start_epoch}) must be <= end_epoch ({end_epoch})")
+        sys.exit(1)
+    
+    # Generate list of epochs to evaluate
+    epochs = list(range(start_epoch, end_epoch + 1, args.save_freq))
+    
+    # Print configuration
+    divergence_str = "with divergence" if args.divergence else "without divergence"
+    images_str = "with images" if args.images else ""
+    print("=" * 80)
+    print(f"Running evaluation loop for {args.model} model {divergence_str} {images_str}")
+    print(f"Task: {args.task}")
+    print(f"Dataset size: {args.dataset_size}")
+    print(f"Training epochs: {args.training_epochs}")
+    print(f"Save frequency: {args.save_freq}")
+    print(f"Seed: {args.seed}")
+    print(f"Video: {'Yes' if args.video else 'No'}")
+    print(f"Save data: {'Yes' if args.save_data else 'No'}")
+    print(f"Evaluating epochs: {start_epoch} to {end_epoch} (step={args.save_freq})")
+    print(f"Total evaluations: {len(epochs)}")
+    print("=" * 80)
+    print()
+    
+    # Loop through epochs
+    failed_epochs = []
+    successful_epochs = []
+    
+    for i, epoch in tqdm(enumerate(epochs, 1), total=len(epochs), desc="Evaluating epochs", unit="epoch"):
+        print(f"\n{'=' * 80}")
+        print(f"[{i}/{len(epochs)}] Evaluating epoch {epoch}")
+        print("=" * 80)
+        
+        # Create a copy of args with the current epoch
+        epoch_args = argparse.Namespace(**vars(args))
+        epoch_args.eval_epoch = epoch
+        
+        try:
+            eval_single_model(epoch_args)
+            successful_epochs.append(epoch)
+            print(f"\n✓ Successfully completed evaluation for epoch {epoch}")
+        except Exception as e:
+            print(f"\n✗ Failed evaluation for epoch {epoch}")
+            print(f"Error: {e}")
+            import traceback
+            traceback.print_exc()
+            failed_epochs.append(epoch)
+        
+        print()
+    
+    # Summary
+    print("\n" + "=" * 80)
+    print("EVALUATION LOOP COMPLETE")
+    print("=" * 80)
+    print(f"Total evaluations: {len(epochs)}")
+    print(f"Successful: {len(successful_epochs)}")
+    print(f"Failed: {len(failed_epochs)}")
+    
+    if successful_epochs:
+        print(f"\n✓ Successful epochs: {successful_epochs}")
+    
+    if failed_epochs:
+        print(f"\n⚠ Failed epochs: {failed_epochs}")
+        print(f"\nTo resume from first failed epoch, run:")
+        loop_flag = "-LOOP" if args.loop else ""
+        video_flag = "-V" if args.video else ""
+        save_data_flag = "-SD" if args.save_data else ""
+        cdm_flag = "-CDM" if args.divergence else ""
+        img_flag = "-I" if args.images else ""
+        print(f"python eval_model.py {loop_flag} -M {args.model} {cdm_flag} {img_flag} "
+              f"-T {args.task} -DS {args.dataset_size} "
+              f"-TE {args.training_epochs} -SF {args.save_freq} -S {args.seed} "
+              f"-START {min(failed_epochs)} {video_flag} {save_data_flag}")
+    else:
+        print("\n✓ All evaluations completed successfully!")
+    
+    print()
+
+
+def main():
+    """Main entry point for eval_model.py script."""
+    args = parse_args()
+    
+    if args.loop:
+        # Loop mode: evaluate multiple epochs
+        if args.eval_epoch is not None:
+            print("Warning: -EE/--eval_epoch is ignored in loop mode")
+        eval_model_loop(args)
+    else:
+        # Single evaluation mode
+        if args.start_epoch is not None or args.end_epoch is not None:
+            print("Warning: -START/--start_epoch and -END/--end_epoch are only used in loop mode (-LOOP)")
+        eval_single_model(args)
+
+
 if __name__ == "__main__":
     main()
+
