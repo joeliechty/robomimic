@@ -16,7 +16,7 @@ import torch
 from tqdm import tqdm
 
 # Import the run_trained_agent function directly
-from robomimic.scripts.run_trained_agent import run_trained_agent
+from robomimic.scripts.run_trained_agent_images import run_trained_agent
 import robomimic.algo.bc as bc
 import robomimic.utils.tensor_utils as TensorUtils
 
@@ -384,6 +384,7 @@ def eval_single_model(args):
     eval_args.render = False
     eval_args.video_skip = 5
     eval_args.dataset_obs = False
+    eval_args.images = args.images
     
     # Add video recording if requested
     if args.video:
