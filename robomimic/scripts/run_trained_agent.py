@@ -71,10 +71,12 @@ from robomimic.envs.env_base import EnvBase
 from robomimic.envs.wrappers import EnvWrapper
 from robomimic.algo import RolloutPolicy
 
+import clip 
+from PIL import Image
 from tqdm import tqdm
 
 
-def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5, return_obs=False, camera_names=None):
+def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5, return_obs=False, camera_names=None, clip_model=None, clip_preprocess=None, device='cpu', images=False):
     """
     Helper function to carry out rollouts. Supports on-screen rendering, off-screen rendering to a video, 
     and returns the rollout trajectory.
@@ -100,6 +102,8 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
     assert isinstance(policy, RolloutPolicy)
     assert not (render and (video_writer is not None))
 
+    
+
     policy.start_episode()
     obs = env.reset()
     state_dict = env.get_state()
@@ -117,6 +121,21 @@ def rollout(policy, env, horizon, render=False, video_writer=None, video_skip=5,
         traj.update(dict(obs=[], next_obs=[]))
     try:
         for step_i in range(horizon):
+            if images:
+                hand_img = env.render(mode="rgb_array", height=84, width=84, camera_name="robot0_eye_in_hand")
+                pil_img = Image.fromarray(hand_img)
+                processed_img = clip_preprocess(pil_img).unsqueeze(0).to(device)
+                
+                with torch.no_grad():
+                    # Extract 512-dim features
+                    image_features = clip_model.encode_image(processed_img)
+                    # Normalize features (Standard practice for CLIP to match training distribution)
+                    image_features /= image_features.norm(dim=-1, keepdim=True)
+                    # Convert to numpy for robomimic's observation dictionary
+                    clip_feats = image_features.cpu().numpy().astype(np.float32).flatten()
+                
+                # 3. Inject into observation dictionary
+                obs["robot0_eye_in_hand_feats"] = clip_feats
 
             # get action from policy and measure inference time
             start_time = time.time()
@@ -201,29 +220,49 @@ def run_trained_agent(args):
         # on-screen rendering can only support one camera
         assert len(args.camera_names) == 1
 
+    
     # relative path to agent
     ckpt_path = args.agent
 
     # device
     device = TorchUtils.get_torch_device(try_to_use_cuda=True)
-
+    if args.images:
+        print(f"Loading CLIP ViT-B/32 on {device}...")
+        clip_model, clip_preprocess = clip.load("ViT-B/32", device=device)
+        clip_model.eval()
+    else:
+        clip_model = None
+        clip_preprocess = None
     # restore policy
     policy, ckpt_dict = FileUtils.policy_from_checkpoint(ckpt_path=ckpt_path, device=device, verbose=True)
-
+    if args.images:
+        if "env_metadata" in ckpt_dict:
+            env_meta = ckpt_dict["env_metadata"]
+            env_meta["env_kwargs"]["has_offscreen_renderer"] = True
+            env_meta["env_kwargs"]["use_camera_obs"] = True
+            
+            # Ensure our specific camera is in the list
+            if "camera_names" not in env_meta["env_kwargs"]:
+                env_meta["env_kwargs"]["camera_names"] = []
+            if "robot0_eye_in_hand" not in env_meta["env_kwargs"]["camera_names"]:
+                env_meta["env_kwargs"]["camera_names"].append("robot0_eye_in_hand")
+            env_meta["env_kwargs"]["camera_heights"] = 84
+            env_meta["env_kwargs"]["camera_widths"] = 84
     # read rollout settings
     rollout_num_episodes = args.n_rollouts
     rollout_horizon = args.horizon
     if rollout_horizon is None:
         # read horizon from config
-        config, _ = FileUtils.config_from_checkpoint(ckpt_dict=ckpt_dict)
+        config, ckpt_dict = FileUtils.config_from_checkpoint(ckpt_dict=ckpt_dict)
         rollout_horizon = config.experiment.rollout.horizon
+        
 
     # create environment from saved checkpoint
     env, _ = FileUtils.env_from_checkpoint(
         ckpt_dict=ckpt_dict, 
         env_name=args.env, 
         render=args.render, 
-        render_offscreen=(args.video_path is not None), 
+        render_offscreen=True, 
         verbose=True,
     )
 
@@ -255,6 +294,10 @@ def run_trained_agent(args):
             video_skip=args.video_skip, 
             return_obs=(write_dataset and args.dataset_obs),
             camera_names=args.camera_names,
+            clip_model=clip_model,
+            clip_preprocess=clip_preprocess,    
+            device=device,
+            images=args.images,
         )
         rollout_stats.append(stats)
 

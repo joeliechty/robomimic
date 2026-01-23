@@ -358,6 +358,7 @@ def main():
     eval_args.render = False
     eval_args.video_skip = 5
     eval_args.dataset_obs = False
+    eval_args.images = args.images
     
     # Add video recording if requested
     if args.video:
