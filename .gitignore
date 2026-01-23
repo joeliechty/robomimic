@@ -140,4 +140,4 @@ robomimic/exps/results/*
 exps/results/*
 robomimic/bc_divergence_results/*
 eval*/
-
+*.csv
