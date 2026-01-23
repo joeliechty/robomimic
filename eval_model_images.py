@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 # Import the run_trained_agent function directly
-from robomimic.scripts.run_trained_agent import run_trained_agent
+from robomimic.scripts.run_trained_agent_images import run_trained_agent
 import robomimic.algo.bc as bc
 import robomimic.utils.tensor_utils as TensorUtils
 
