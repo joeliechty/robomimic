@@ -14,11 +14,13 @@ import sys
 from pathlib import Path
 import torch
 from tqdm import tqdm
+import json
 
 # Import the run_trained_agent function directly
-from robomimic.scripts.run_trained_agent_images import run_trained_agent
+from robomimic.scripts.run_trained_agent import run_trained_agent
 import robomimic.algo.bc as bc
 import robomimic.utils.tensor_utils as TensorUtils
+import robomimic.utils.file_utils as FileUtils
 
 # --- Logging utility to save console output to file ---
 class Logger:
@@ -94,6 +96,28 @@ def reset_with_history(self):
 bc.BC_Transformer.get_action = get_action_with_history
 bc.BC_Transformer.reset = reset_with_history
 print("Applied BC_Transformer monkey-patch for observation history buffering during rollout")
+
+def fix_checkpoint_camera_names(model_path):
+    """Fix camera_names format in env_meta if it's stored as a string instead of list.
+    
+    Args:
+        model_path: Path to the model checkpoint file
+    """
+    ckpt_dict = FileUtils.maybe_dict_from_checkpoint(model_path)
+    
+    # Fix camera_names if it's a string
+    if "env_metadata" in ckpt_dict:
+        env_meta = ckpt_dict["env_metadata"]
+        if "env_kwargs" in env_meta and "camera_names" in env_meta["env_kwargs"]:
+            camera_names = env_meta["env_kwargs"]["camera_names"]
+            if isinstance(camera_names, str):
+                print(f"Fixed camera_names in env_meta: '{camera_names}' -> ['{camera_names}']")
+                env_meta["env_kwargs"]["camera_names"] = [camera_names]
+                # Save the checkpoint with the fix
+                torch.save(ckpt_dict, model_path)
+                return True  # Indicate that a fix was applied
+    
+    return False  # No fix needed
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate trained robomimic models")
@@ -223,6 +247,13 @@ def parse_args():
         type=int,
         default=None,
         help="Ending epoch for loop mode (default: training_epochs)"
+    )
+    
+    parser.add_argument(
+        "--eval_freq", "-EF",
+        type=int,
+        default=None,
+        help="Evaluation frequency for loop mode (default: same as save_freq). Must be a multiple of save_freq."
     )
     
     return parser.parse_args()
@@ -431,6 +462,9 @@ def eval_single_model(args):
     else:
         eval_args.dataset_path = None
     
+    # Fix checkpoint format issues if needed
+    fix_checkpoint_camera_names(model_path)
+    
     # Run evaluation directly
     print("\nRunning evaluation...")
     sys.stdout.flush()
@@ -450,6 +484,14 @@ def eval_model_loop(args):
     Args:
         args: argparse.Namespace with evaluation arguments including loop parameters
     """
+    # Determine evaluation frequency
+    eval_freq = args.eval_freq if args.eval_freq is not None else args.save_freq
+    
+    # Validate eval_freq is a multiple of save_freq
+    if eval_freq % args.save_freq != 0:
+        print(f"Error: eval_freq ({eval_freq}) must be a multiple of save_freq ({args.save_freq})")
+        sys.exit(1)
+    
     # Determine epoch range
     start_epoch = args.start_epoch if args.start_epoch is not None else args.save_freq
     end_epoch = args.end_epoch if args.end_epoch is not None else args.training_epochs
@@ -468,7 +510,7 @@ def eval_model_loop(args):
         sys.exit(1)
     
     # Generate list of epochs to evaluate
-    epochs = list(range(start_epoch, end_epoch + 1, args.save_freq))
+    epochs = list(range(start_epoch, end_epoch + 1, eval_freq))
     
     # Print configuration
     divergence_str = "with divergence" if args.divergence else "without divergence"
@@ -479,10 +521,11 @@ def eval_model_loop(args):
     print(f"Dataset size: {args.dataset_size}")
     print(f"Training epochs: {args.training_epochs}")
     print(f"Save frequency: {args.save_freq}")
+    print(f"Eval frequency: {eval_freq}")
     print(f"Seed: {args.seed}")
     print(f"Video: {'Yes' if args.video else 'No'}")
     print(f"Save data: {'Yes' if args.save_data else 'No'}")
-    print(f"Evaluating epochs: {start_epoch} to {end_epoch} (step={args.save_freq})")
+    print(f"Evaluating epochs: {start_epoch} to {end_epoch} (step={eval_freq})")
     print(f"Total evaluations: {len(epochs)}")
     print("=" * 80)
     print()
@@ -532,9 +575,10 @@ def eval_model_loop(args):
         save_data_flag = "-SD" if args.save_data else ""
         cdm_flag = "-CDM" if args.divergence else ""
         img_flag = "-I" if args.images else ""
+        eval_freq_flag = f"-EF {eval_freq}" if args.eval_freq is not None else ""
         print(f"python eval_model.py {loop_flag} -M {args.model} {cdm_flag} {img_flag} "
               f"-T {args.task} -DS {args.dataset_size} "
-              f"-TE {args.training_epochs} -SF {args.save_freq} -S {args.seed} "
+              f"-TE {args.training_epochs} -SF {args.save_freq} {eval_freq_flag} -S {args.seed} "
               f"-START {min(failed_epochs)} {video_flag} {save_data_flag}")
     else:
         print("\n✓ All evaluations completed successfully!")
@@ -553,8 +597,8 @@ def main():
         eval_model_loop(args)
     else:
         # Single evaluation mode
-        if args.start_epoch is not None or args.end_epoch is not None:
-            print("Warning: -START/--start_epoch and -END/--end_epoch are only used in loop mode (-LOOP)")
+        if args.start_epoch is not None or args.end_epoch is not None or args.eval_freq is not None:
+            print("Warning: -START/--start_epoch, -END/--end_epoch, and -EF/--eval_freq are only used in loop mode (-LOOP)")
         eval_single_model(args)
 
 
