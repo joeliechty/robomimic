@@ -3,7 +3,7 @@
 Convenient script for evaluating trained models from the experiments.
 
 Usage:
-    python3 eval_model.py -M transformer -T lift -DS F -TE 500 -SF 20 -EE 160 -V -SD
+    python3 eval_rollouts.py -M transformer -T lift -DS F -TE 500 -SF 20 -EE 160 -V -SD
 This will evaluate the transformer model trained on the full lift dataset for 500 epochs,
 saving the video and data for epoch 160, using the default 50 rollouts and seed 0.
 """
@@ -121,141 +121,27 @@ def fix_checkpoint_camera_names(model_path):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate trained robomimic models")
-    
-    parser.add_argument(
-        "--model", "-M",
-        type=str,
-        required=True,
-        choices=["transformer", "mlp", "diffusion", "diffusion_policy", "vae"],
-        help="Model type: transformer, vae, diffusion, or diffusion_policy"
-    )
-    
-    parser.add_argument(
-        "--task", "-T",
-        type=str,
-        required=True,
-        choices=["lift", "can", "square"],
-        help="Task name"
-    )
-
-    parser.add_argument(
-        "--divergence", "-CDM",
-        action="store_true",
-        help="Use divergence model"
-    )
-    
-    parser.add_argument(
-        "--images", "-I",
-        action="store_true",
-        help="Model trained with images"
-    )
-    
-    parser.add_argument(
-        "--dataset_size", "-DS",
-        type=str,
-        required=True,
-        choices=["F", "H1", "H2", "Q1", "Q2", "Q3", "Q4"],
-        help="Dataset size: F (full), H1/H2 (half), Q1-Q4 (quarter)"
-    )
-    
-    parser.add_argument(
-        "--training_epochs", "-TE",
-        type=int,
-        required=True,
-        help="Number of training epochs (e.g., 500, 1000)"
-    )
-    
-    parser.add_argument(
-        "--save_freq", "-SF",
-        type=int,
-        required=True,
-        help="Model save frequency during training (e.g., 5, 20)"
-    )
-    
-    parser.add_argument(
-        "--eval_epoch", "-EE",
-        type=int,
-        default=None,
-        help="Specific epoch to evaluate. If not provided, will use 'last.pth'"
-    )
-    
-    parser.add_argument(
-        "--n_rollouts", "-ROLL",
-        type=int,
-        default=50,
-        help="Number of evaluation rollouts (default: 50)"
-    )
-    
-    parser.add_argument(
-        "--seed", "-S",
-        type=int,
-        default=0,
-        help="Random seed for evaluation (default: 0)"
-    )
-    
-    parser.add_argument(
-        "--video", "-V",
-        action="store_true",
-        help="Save evaluation video"
-    )
-    
-    parser.add_argument(
-        "--save_data", "-SD",
-        action="store_true",
-        help="Save rollout data (.hdf5) and stats (.json)"
-    )
-    
-    parser.add_argument(
-        "--horizon", "-H",
-        type=int,
-        default=400,
-        help="Maximum horizon for rollouts (default: 400)"
-    )
-    
-    parser.add_argument(
-        "--camera_names", "-CAMS",
-        type=str,
-        nargs='+',
-        default=["agentview"],
-        help="Camera names for video rendering"
-    )
-
-    # legacy experiment number argument
-    parser.add_argument(
-        "--exp",
-        type=int,
-        default=None,
-        help="[Legacy] Experiment number for old naming convention"
-    )
-    
+    parser.add_argument("--model", "-M", type=str, required=True, choices=["transformer", "mlp", "diffusion", "diffusion_policy", "vae"], help="Model type: transformer, vae, diffusion, or diffusion_policy")
+    parser.add_argument("--task", "-T", type=str, required=True, choices=["lift", "can", "square"], help="Task name")
+    parser.add_argument("--divergence", "-CDM", action="store_true", help="Use divergence model")  
+    parser.add_argument("--images", "-I", action="store_true", help="Model trained with images")
+    parser.add_argument("--dataset_size", "-DS", type=str, required=True, choices=["F", "H1", "H2", "Q1", "Q2", "Q3", "Q4"], help="Dataset size: F (full), H1/H2 (half), Q1-Q4 (quarter)")
+    parser.add_argument("--training_epochs", "-TE", type=int, required=True, help="Number of training epochs (e.g., 500, 1000)") 
+    parser.add_argument("--save_freq", "-SF", type=int, required=True, help="Model save frequency during training (e.g., 5, 20)")
+    parser.add_argument("--eval_epoch", "-EE", type=int, default=None, help="Specific epoch to evaluate. If not provided, will use 'last.pth'")
+    parser.add_argument("--n_rollouts", "-ROLL", type=int, default=50, help="Number of evaluation rollouts (default: 50)")
+    parser.add_argument("--seed", "-S", type=int, default=0, help="Random seed for evaluation (default: 0)")
+    parser.add_argument("--video", "-V", action="store_true", help="Save evaluation video")
+    parser.add_argument("--save_data", "-SD", action="store_true", help="Save rollout data (.hdf5) and stats (.json)")
+    parser.add_argument("--horizon", "-H", type=int, default=400, help="Maximum horizon for rollouts (default: 400)")
+    parser.add_argument("--camera_names", "-CAMS", type=str, nargs='+', default=["agentview"], help="Camera names for video rendering")
     # Loop mode arguments
-    parser.add_argument(
-        "--loop", "-LOOP",
-        action="store_true",
-        help="Loop through all epochs from save_freq to training_epochs"
-    )
-    
-    parser.add_argument(
-        "--start_epoch", "-START",
-        type=int,
-        default=None,
-        help="Starting epoch for loop mode (default: save_freq)"
-    )
-    
-    parser.add_argument(
-        "--end_epoch", "-END",
-        type=int,
-        default=None,
-        help="Ending epoch for loop mode (default: training_epochs)"
-    )
-    
-    parser.add_argument(
-        "--eval_freq", "-EF",
-        type=int,
-        default=None,
-        help="Evaluation frequency for loop mode (default: same as save_freq). Must be a multiple of save_freq."
-    )
-    
+    parser.add_argument("--loop", "-LOOP", action="store_true", help="Loop through all epochs from save_freq to training_epochs")
+    parser.add_argument("--start_epoch", "-START", type=int, default=None, help="Starting epoch for loop mode (default: save_freq)")
+    parser.add_argument("--end_epoch", "-END", type=int, default=None, help="Ending epoch for loop mode (default: training_epochs)")
+    parser.add_argument("--eval_freq", "-EF", type=int, default=None, help="Evaluation frequency for loop mode (default: same as save_freq). Must be a multiple of save_freq.")
+    # legacy experiment number argument
+    parser.add_argument("--exp", type=int, default=None, help="[Legacy] Experiment number for old naming convention")
     return parser.parse_args()
 
 def find_model_path(model_type, divergence, images, task, dataset_size, training_epochs, save_freq, epoch=None, exp_num=None):
@@ -452,6 +338,7 @@ def eval_single_model(args):
         log_path = data_path.replace(".hdf5", "_log.txt")
         
         eval_args.dataset_path = data_path
+        eval_args.dataset_obs = True
         print(f"Will save data to: {data_path}")
         print(f"Will save stats to: {stats_path}")
         print(f"Will save logs to: {log_path}")
@@ -476,7 +363,6 @@ def eval_single_model(args):
         if logger is not None:
             sys.stdout = logger.terminal
             logger.close()
-
 
 def eval_model_loop(args):
     """Loop through multiple epochs and evaluate each checkpoint.
@@ -576,7 +462,7 @@ def eval_model_loop(args):
         cdm_flag = "-CDM" if args.divergence else ""
         img_flag = "-I" if args.images else ""
         eval_freq_flag = f"-EF {eval_freq}" if args.eval_freq is not None else ""
-        print(f"python eval_model.py {loop_flag} -M {args.model} {cdm_flag} {img_flag} "
+        print(f"python eval_rollouts.py {loop_flag} -M {args.model} {cdm_flag} {img_flag} "
               f"-T {args.task} -DS {args.dataset_size} "
               f"-TE {args.training_epochs} -SF {args.save_freq} {eval_freq_flag} -S {args.seed} "
               f"-START {min(failed_epochs)} {video_flag} {save_data_flag}")
@@ -587,7 +473,7 @@ def eval_model_loop(args):
 
 
 def main():
-    """Main entry point for eval_model.py script."""
+    """Main entry point for eval_rollouts.py script."""
     args = parse_args()
     
     if args.loop:

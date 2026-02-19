@@ -38,6 +38,6 @@ docker run -d \
   -v $(pwd):/app/robomimic \
   -w /app/robomimic \
   robomimic \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python eval_model.py -M vae -T ${TASK} -DS ${DATASET_PORTION} -TE ${TRAINING_EPOCHS} -SF ${SAVE_FREQ} -EE ${EVAL_EPOCH} -S ${SEED} -SD ${VIDEO_ARG}"
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python eval_rollouts.py -M vae -T ${TASK} -DS ${DATASET_PORTION} -TE ${TRAINING_EPOCHS} -SF ${SAVE_FREQ} -EE ${EVAL_EPOCH} -S ${SEED} -SD ${VIDEO_ARG}"
 
 echo "Launched VAE baseline evaluation job for ${TASK} with dataset portion: ${DATASET_PORTION}, training epochs: ${TRAINING_EPOCHS}, save frequency: ${SAVE_FREQ}, evaluation epoch: ${EVAL_EPOCH}, seed: ${SEED}"

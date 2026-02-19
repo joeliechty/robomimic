@@ -25,7 +25,7 @@ SEED=$5
 START_EPOCH=$6
 END_EPOCH=$7
 EVAL_FREQ=$8
-VIDEO_FLAG=$9=
+VIDEO_FLAG=$9
 
 # Build optional arguments
 LOOP_ARGS="-LOOP"
@@ -60,6 +60,6 @@ docker run -d \
   -v $(pwd):/app/robomimic \
   -w /app/robomimic \
   robomimic \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && pip install git+https://github.com/openai/CLIP.git && python eval_model.py -M diffusion -T ${TASK} -DS ${DATASET_PORTION} -TE ${TRAINING_EPOCHS} -SF ${SAVE_FREQ} -S ${SEED} -SD ${IMAGES_FLAG} ${LOOP_ARGS}"
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && pip install git+https://github.com/openai/CLIP.git && python eval_rollouts.py -M diffusion -T ${TASK} -DS ${DATASET_PORTION} -TE ${TRAINING_EPOCHS} -SF ${SAVE_FREQ} -S ${SEED} -SD ${IMAGES_FLAG} ${LOOP_ARGS}"
 
 echo "Launched Diffusion Policy baseline evaluation loop job for ${TASK} with dataset portion: ${DATASET_PORTION}, training epochs: ${TRAINING_EPOCHS}, save frequency: ${SAVE_FREQ}, seed: ${SEED}"

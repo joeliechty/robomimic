@@ -60,6 +60,6 @@ docker run -d \
   -v $(pwd):/app/robomimic \
   -w /app/robomimic \
   robomimic \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && pip install git+https://github.com/openai/CLIP.git && python eval_model.py -M vae -CDM -T ${TASK} -DS ${DATASET_PORTION} -TE ${TRAINING_EPOCHS} -SF ${SAVE_FREQ} -S ${SEED} -SD ${IMAGES_FLAG} ${LOOP_ARGS}"
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && pip install git+https://github.com/openai/CLIP.git && python eval_rollouts.py -M vae -CDM -T ${TASK} -DS ${DATASET_PORTION} -TE ${TRAINING_EPOCHS} -SF ${SAVE_FREQ} -S ${SEED} -SD ${IMAGES_FLAG} ${LOOP_ARGS}"
 
 echo "Launched VAE CDM evaluation loop job for ${TASK} with dataset portion: ${DATASET_PORTION}, training epochs: ${TRAINING_EPOCHS}, save frequency: ${SAVE_FREQ}, seed: ${SEED}"
