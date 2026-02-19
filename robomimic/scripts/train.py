@@ -238,6 +238,17 @@ def train(config, device, resume=False):
         device=device
     )
 
+    try:
+        # instantiate the algo/policy to inspect params
+        model = bc.BC_Transformer(config)   # may need only config; adjust if your robomimic version requires args
+        print("Model instantiated — checking encoder params:")
+        for name, param in model.named_parameters():
+            if "encoder" in name or "visual" in name or "resnet" in name:
+                print(name, "requires_grad=", param.requires_grad, "shape=", tuple(param.shape))
+    except Exception as e:
+        print("Could not instantiate model for inspection (this is non-fatal). Error:", e)
+        print("You can inspect params inside train() or instantiate differently for your robomimic version.")
+
     if resume:
         # load ckpt dict
         print("*" * 50)

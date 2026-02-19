@@ -95,6 +95,11 @@ def parse_args():
         default=10,
         help="save checkpoint every N epochs"
     )
+    parser.add_argument(
+        "--end_to_end_image_training", "-E2E",
+        action="store_true",
+        help="Train image encoders end-to-end using raw RGB observations"
+    )
     return parser.parse_args()
 
 # --- Monkey-patch for observation history buffering during rollout ---
@@ -207,6 +212,9 @@ print("Applied BC_Transformer monkey-patch for process_batch_for_training (CDM)"
 
 args = parse_args()
 
+if args.end_to_end_image_training:
+    args.use_images = False
+
 if args.dataset_portion == "full":
     portion_prefix = "F"
     dataset_suffix = ""
@@ -221,13 +229,13 @@ else:
     dataset_suffix = ""
 
 if args.dataset == "lift":
-    target = f"/app/robomimic/datasets/lift/low_dim_v15{dataset_suffix}_w_cdm.hdf5"
+    target = f"dataset/lift/low_dim_v15{dataset_suffix}_w_cdm.hdf5"
 elif args.dataset == "can":
-    target = f"/app/robomimic/datasets/can/can_feats{dataset_suffix}_w_cdm.hdf5"
-    source = f"/app/robomimic/datasets/can/can_demo.hdf5"
+    target = f"dataset/can/can_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"dataset/can/can_demo.hdf5"
 elif args.dataset == "square":
-    target = f"/app/robomimic/datasets/square/square_feats{dataset_suffix}_w_cdm.hdf5"
-    source = f"/app/robomimic/datasets/square/square_demo.hdf5"
+    target = f"dataset/square/square_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"dataset/square/square_demo.hdf5"
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
@@ -257,12 +265,16 @@ with config.values_unlocked():
         base_dir += "_divergence"
         if args.use_images:
             base_dir += "_images"
+        elif args.end_to_end_image_training:
+            base_dir += "_end2end_images"
         cdm_weight = args.div_loss_weight
         print(f"CDM Loss ENABLED with weight: {cdm_weight}, Images: {args.use_images} ")
     else:
         base_dir += "_no_divergence"
         if args.use_images:
             base_dir += "_images"
+        elif args.end_to_end_image_training:
+            base_dir += "_end2end_images"
         cdm_weight = 0.0
         print(f"CDM Loss DISABLED (weight: {cdm_weight}), Images: {args.use_images} ")
     
@@ -307,7 +319,20 @@ with config.values_unlocked():
     if args.use_images:
         config.observation.modalities.obs.low_dim.append("robot0_eye_in_hand_feats")
         config.observation.modalities.obs.rgb = []
+    elif args.end_to_end_image_training:
+        config.observation.modalities.obs.rgb = ["robot0_eye_in_hand_image", "agentview_image"]
+        config.observation.encoder.rgb.core_class = "VisualCore"
+        config.observation.encoder.rgb.core_kwargs = {
+            "backbone_class": "ResNet18Conv",
+            "feature_dimension": 512,
+            "pretrained": False,
+            "flatten": True,
+        }
 
+        config.observation.encoder.rgb.share = False
+
+        config.observation.encoder.rgb.obs_randomizer_class = None
+        config.observation.encoder.rgb.freeze = False
     # Enable Transformer architecture
     config.algo.rnn.enabled = False
     config.algo.transformer.enabled = True
@@ -342,6 +367,8 @@ with config.values_unlocked():
 # Print config to verify
 print("Training Configuration:")
 print(config)
+
+
 
 # Run training
 train(config, device="cuda" if torch.cuda.is_available() else "cpu")
