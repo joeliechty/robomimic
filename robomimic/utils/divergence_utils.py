@@ -1739,7 +1739,6 @@ def test_and_visualize(args):
     data = _load_training_data(args.dataset)
     
     # Extract directory from dataset path for saving figures
-    import os
     dataset_dir = os.path.dirname(args.dataset)
     print(f"\nFigures will be saved to: {dataset_dir}")
     

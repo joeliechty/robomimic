@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plot success rates for transformer models trained on the lift dataset.
+Plot success rates for transformer models trained on the square dataset.
 Compares performance across different dataset sizes (Full, Half, Quarter) 
 and training methods (with divergence vs. without divergence).
 """
@@ -22,9 +22,9 @@ def get_success_rate(stats_file):
     return data.get('Success_Rate', None)
 
 
-def collect_transformer_lift_data(base_dir, dataset_size, has_divergence, max_seeds=10, save_frequency=20):
+def collect_transformer_square_data(base_dir, dataset_size, has_divergence, max_seeds=10, save_frequency=20):
     """
-    Collect success rates for transformer models on lift dataset across multiple seeds.
+    Collect success rates for transformer models on square dataset across multiple seeds.
     
     Args:
         base_dir: Base directory containing eval data
@@ -49,7 +49,7 @@ def collect_transformer_lift_data(base_dir, dataset_size, has_divergence, max_se
     for epoch in epochs:
         for seed in range(max_seeds):
             # Construct filename
-            filename = f"transformer_lift_{dataset_size}_500_{save_frequency}_{suffix}_epoch{epoch}_seed{seed}_stats.json"
+            filename = f"transformer_square_{dataset_size}_1000_{save_frequency}_{suffix}_img_epoch{epoch}_seed{seed}_stats.json"
             filepath = os.path.join(base_dir, subdir, filename)
             
             # Get success rate
@@ -69,9 +69,9 @@ def collect_transformer_lift_data(base_dir, dataset_size, has_divergence, max_se
     return mean_success_rates, std_success_rates
 
 
-def plot_success_rates(eval_data_dir, output_file='transformer_lift_success_plot.png'):
+def plot_success_rates(eval_data_dir, output_file='transformer_square_success_plot.png'):
     """
-    Create plot comparing transformer model success rates on lift dataset.
+    Create plot comparing transformer model success rates on square dataset.
     
     Args:
         eval_data_dir: Directory containing divergence and no_divergence subdirectories
@@ -101,7 +101,7 @@ def plot_success_rates(eval_data_dir, output_file='transformer_lift_success_plot
         color = colors[(dataset_code, save_freq)]
         
         # With divergence (solid line)
-        mean_div, std_div = collect_transformer_lift_data(eval_data_dir, dataset_code, has_divergence=True, save_frequency=save_freq)
+        mean_div, std_div = collect_transformer_square_data(eval_data_dir, dataset_code, has_divergence=True, save_frequency=save_freq)
         if mean_div:
             epochs = sorted(mean_div.keys())
             success_rates = [mean_div[e] * 100 for e in epochs]  # Convert to percentage
@@ -120,7 +120,7 @@ def plot_success_rates(eval_data_dir, output_file='transformer_lift_success_plot
         
         # Without divergence (dashed line) - only plot for save_freq 20 to avoid duplication
         if save_freq == 20:
-            mean_nodiv, std_nodiv = collect_transformer_lift_data(eval_data_dir, dataset_code, has_divergence=False, save_frequency=save_freq)
+            mean_nodiv, std_nodiv = collect_transformer_square_data(eval_data_dir, dataset_code, has_divergence=False, save_frequency=save_freq)
             if mean_nodiv:
                 epochs = sorted(mean_nodiv.keys())
                 success_rates = [mean_nodiv[e] * 100 for e in epochs]  # Convert to percentage
@@ -140,7 +140,7 @@ def plot_success_rates(eval_data_dir, output_file='transformer_lift_success_plot
     # Customize plot
     ax.set_xlabel('Epoch', fontsize=12, fontweight='bold')
     ax.set_ylabel('Success Rate (%)', fontsize=12, fontweight='bold')
-    ax.set_title('Transformer Model Success Rates on Lift Dataset', 
+    ax.set_title('Transformer Model Success Rates on Square Dataset', 
                 fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3)
     ax.legend(loc='best', frameon=True, shadow=True)
@@ -167,5 +167,5 @@ if __name__ == '__main__':
     eval_data_dir = os.path.join(script_dir, 'eval_data')
     
     # Create the plot
-    output_file = os.path.join(script_dir, 'transformer_lift_success_plot.png')
+    output_file = os.path.join(script_dir, 'transformer_square_success_plot.png')
     plot_success_rates(eval_data_dir, output_file)
