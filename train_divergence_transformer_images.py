@@ -105,6 +105,11 @@ def parse_args():
         action="store_true",
         help="set this flag to run validation during training"
     )
+    parser.add_argument(
+        "--resume",
+        action='store_true',
+        help="set this flag to resume training from latest checkpoint"
+    )
     return parser.parse_args()
 
 # --- Monkey-patch for observation history buffering during rollout ---
@@ -404,4 +409,4 @@ print(config)
 
 
 # Run training
-train(config, device="cuda" if torch.cuda.is_available() else "cpu")
+train(config, device="cuda" if torch.cuda.is_available() else "cpu", resume=args.resume)
