@@ -114,109 +114,120 @@ def _estimate_divergence_jvp(model, batch, obs_key_pos='robot0_eef_pos', obs_key
     # Construct base end-effector pose [batch, 7] = [pos(3), quat(4)]
     # This is the pose at the last timestep (or only timestep for non-temporal models)
     base_ee_pose = torch.cat([ee_pos_last, ee_quat_last], dim=-1)
+
+    # [FIX] Save original training state and force eval mode
+    # This acts as a context manager for the duration of the JVP calculation
+    was_training = model.training
+    model.eval()
     
-    # Accumulate divergence estimates across samples
-    divergence_samples = []
+    try: 
+        # Accumulate divergence estimates across samples
+        divergence_samples = []
+        
+        for _ in range(n_samples):
+            # Step 1: Sample random probe vector in tangent space (se(3) - 6D twist)
+            # epsilon represents a random direction in the Lie algebra
+            epsilon = torch.randn(batch_size, 6, device=device, dtype=dtype)
+            
+            # Step 2: Define differentiable manifold wrapper
+            # This function applies twist perturbations to the EE pose in obs_dict
+            def f(twist):
+                """
+                Apply twist perturbation to end-effector pose in observation dict.
+                
+                Args:
+                    twist: [batch, 6] - perturbation in tangent space se(3)
+                
+                Returns:
+                    [batch, action_dim] - model's action prediction
+                """
+                # Perturb the base end-effector pose (last timestep) using twist
+                perturbed_ee_pose = add_twist_to_pose(base_ee_pose, twist, dt=1.0, w_first=False, world_frame=True)
+                
+                # Split back into position and quaternion
+                perturbed_pos = perturbed_ee_pose[:, :3]  # [batch, 3]
+                perturbed_quat = perturbed_ee_pose[:, 3:]  # [batch, 4]
+                
+                # Create perturbed observation dictionary
+                perturbed_obs_dict = {k: v.clone() for k, v in obs_dict.items()}
+                
+                if is_temporal:
+                    # For temporal models: replace only the last timestep
+                    perturbed_obs_dict[obs_key_pos] = obs_dict[obs_key_pos].clone()
+                    perturbed_obs_dict[obs_key_quat] = obs_dict[obs_key_quat].clone()
+                    perturbed_obs_dict[obs_key_pos][:, -1, :] = perturbed_pos
+                    perturbed_obs_dict[obs_key_quat][:, -1, :] = perturbed_quat
+                else:
+                    # For non-temporal models: replace the entire observation
+                    perturbed_obs_dict[obs_key_pos] = perturbed_pos
+                    perturbed_obs_dict[obs_key_quat] = perturbed_quat
+                
+                # Run model with perturbed observations
+                # This works for all BC architectures: MLP, RNN, Transformer, Gaussian, GMM, VAE
+                output = model(obs_dict=perturbed_obs_dict, goal_dict=goal_dict)
+                
+                # Handle different output types:
+                # - Deterministic policies (ActorNetwork): return actions directly [batch, action_dim]
+                # - RNN/Transformer: return action sequences [batch, time, action_dim]
+                # - Stochastic policies in eval mode (GaussianActorNetwork, GMMActorNetwork): return actions
+                # - VAE: returns actions
+                # For stochastic policies using forward_train(), they return distributions,
+                # but here we use forward() which returns deterministic actions (means)
+                
+                # Handle sequence outputs (RNN/Transformer): take last timestep action
+                # This is the action that would actually be executed at the current state
+                if output.dim() == 3:
+                    # Output is [batch, time, action_dim], take last timestep
+                    output = output[:, -1, :]
+                
+                # Ensure output is 2D [batch, action_dim]
+                if output.dim() == 1:
+                    output = output.unsqueeze(0)
+                
+                return output
+            
+            # Step 3: Compute Jacobian-Vector Product at zero perturbation
+            # This efficiently computes J @ epsilon where J is the Jacobian d(actions)/d(twist)
+            zero_twist = torch.zeros(batch_size, 6, device=device, dtype=dtype)
+            
+            # jvp returns (f(zero_twist), J @ epsilon)
+            # Note: J is [action_dim, 6], so J @ epsilon is [action_dim]
+            output, jvp_val = jvp(f, (zero_twist,), (epsilon,))
+            
+            # Step 4: Trace estimation using Hutchinson's estimator
+            # Divergence = Trace(J) ≈ E[epsilon^T @ (J @ epsilon)]
+            # 
+            # If action_dim != 6, we need to handle the mismatch:
+            # - If action_dim > 6: Take first 6 dimensions (typically EE pose control)
+            # - If action_dim < 6: Pad or only use available dimensions
+            # 
+            # For robustness, we compute divergence on the minimum of the two dimensions
+            action_dim = jvp_val.shape[-1]
+            effective_dim = min(action_dim, 6)
+            
+            # Slice both vectors to effective dimension
+            epsilon_slice = epsilon[:, :effective_dim]
+            jvp_slice = jvp_val[:, :effective_dim]
+            
+            # Trace estimate: epsilon^T @ (J @ epsilon)
+            # For the full 6x6 block of J, we use effective_dim
+            divergence_sample = torch.sum(epsilon_slice * jvp_slice, dim=-1)  # [batch]
+            
+            # Scale by dimension to get proper divergence estimate
+            # (since we're only measuring divergence in a subspace)
+            if effective_dim < 6:
+                divergence_sample = divergence_sample * (6.0 / effective_dim)
+            
+            divergence_samples.append(divergence_sample)
+        
+        # Average over samples for better estimate
+        divergence = torch.stack(divergence_samples).mean(dim=0)  # [batch]
     
-    for _ in range(n_samples):
-        # Step 1: Sample random probe vector in tangent space (se(3) - 6D twist)
-        # epsilon represents a random direction in the Lie algebra
-        epsilon = torch.randn(batch_size, 6, device=device, dtype=dtype)
-        
-        # Step 2: Define differentiable manifold wrapper
-        # This function applies twist perturbations to the EE pose in obs_dict
-        def f(twist):
-            """
-            Apply twist perturbation to end-effector pose in observation dict.
-            
-            Args:
-                twist: [batch, 6] - perturbation in tangent space se(3)
-            
-            Returns:
-                [batch, action_dim] - model's action prediction
-            """
-            # Perturb the base end-effector pose (last timestep) using twist
-            perturbed_ee_pose = add_twist_to_pose(base_ee_pose, twist, dt=1.0, w_first=False, world_frame=True)
-            
-            # Split back into position and quaternion
-            perturbed_pos = perturbed_ee_pose[:, :3]  # [batch, 3]
-            perturbed_quat = perturbed_ee_pose[:, 3:]  # [batch, 4]
-            
-            # Create perturbed observation dictionary
-            perturbed_obs_dict = {k: v.clone() for k, v in obs_dict.items()}
-            
-            if is_temporal:
-                # For temporal models: replace only the last timestep
-                perturbed_obs_dict[obs_key_pos] = obs_dict[obs_key_pos].clone()
-                perturbed_obs_dict[obs_key_quat] = obs_dict[obs_key_quat].clone()
-                perturbed_obs_dict[obs_key_pos][:, -1, :] = perturbed_pos
-                perturbed_obs_dict[obs_key_quat][:, -1, :] = perturbed_quat
-            else:
-                # For non-temporal models: replace the entire observation
-                perturbed_obs_dict[obs_key_pos] = perturbed_pos
-                perturbed_obs_dict[obs_key_quat] = perturbed_quat
-            
-            # Run model with perturbed observations
-            # This works for all BC architectures: MLP, RNN, Transformer, Gaussian, GMM, VAE
-            output = model(obs_dict=perturbed_obs_dict, goal_dict=goal_dict)
-            
-            # Handle different output types:
-            # - Deterministic policies (ActorNetwork): return actions directly [batch, action_dim]
-            # - RNN/Transformer: return action sequences [batch, time, action_dim]
-            # - Stochastic policies in eval mode (GaussianActorNetwork, GMMActorNetwork): return actions
-            # - VAE: returns actions
-            # For stochastic policies using forward_train(), they return distributions,
-            # but here we use forward() which returns deterministic actions (means)
-            
-            # Handle sequence outputs (RNN/Transformer): take last timestep action
-            # This is the action that would actually be executed at the current state
-            if output.dim() == 3:
-                # Output is [batch, time, action_dim], take last timestep
-                output = output[:, -1, :]
-            
-            # Ensure output is 2D [batch, action_dim]
-            if output.dim() == 1:
-                output = output.unsqueeze(0)
-            
-            return output
-        
-        # Step 3: Compute Jacobian-Vector Product at zero perturbation
-        # This efficiently computes J @ epsilon where J is the Jacobian d(actions)/d(twist)
-        zero_twist = torch.zeros(batch_size, 6, device=device, dtype=dtype)
-        
-        # jvp returns (f(zero_twist), J @ epsilon)
-        # Note: J is [action_dim, 6], so J @ epsilon is [action_dim]
-        output, jvp_val = jvp(f, (zero_twist,), (epsilon,))
-        
-        # Step 4: Trace estimation using Hutchinson's estimator
-        # Divergence = Trace(J) ≈ E[epsilon^T @ (J @ epsilon)]
-        # 
-        # If action_dim != 6, we need to handle the mismatch:
-        # - If action_dim > 6: Take first 6 dimensions (typically EE pose control)
-        # - If action_dim < 6: Pad or only use available dimensions
-        # 
-        # For robustness, we compute divergence on the minimum of the two dimensions
-        action_dim = jvp_val.shape[-1]
-        effective_dim = min(action_dim, 6)
-        
-        # Slice both vectors to effective dimension
-        epsilon_slice = epsilon[:, :effective_dim]
-        jvp_slice = jvp_val[:, :effective_dim]
-        
-        # Trace estimate: epsilon^T @ (J @ epsilon)
-        # For the full 6x6 block of J, we use effective_dim
-        divergence_sample = torch.sum(epsilon_slice * jvp_slice, dim=-1)  # [batch]
-        
-        # Scale by dimension to get proper divergence estimate
-        # (since we're only measuring divergence in a subspace)
-        if effective_dim < 6:
-            divergence_sample = divergence_sample * (6.0 / effective_dim)
-        
-        divergence_samples.append(divergence_sample)
-    
-    # Average over samples for better estimate
-    divergence = torch.stack(divergence_samples).mean(dim=0)  # [batch]
-    
+    finally:
+        # [FIX] Restore original training state
+        if was_training:
+            model.train()
+
     return divergence
 
 # training data divergence and score estimation
@@ -881,7 +892,7 @@ def add_div_and_score_to_training_data(load_path, save_path=None, verbose=True, 
 
     return data
     
-def load_and_checkdivergence_and_score(hdf5_path, verbose=True):
+def load_and_check_divergence_and_score(hdf5_path, verbose=True):
     """
     Load a dataset and verify that it contains divergence and score data.
     
@@ -1307,6 +1318,171 @@ def visualize_observation_trajectories(ee_state_tensor, demo_keys, nan_mask=None
         plt.tight_layout(rect=[0, 0, 1, 0.96])
     except:
         pass  # Ignore tight_layout issues with 3D plots
+    
+    return fig
+
+def visualize_state_probability_evolution(ee_state_tensor, demo_keys, nan_mask=None, 
+                                          phase_tensor=None, n_density_bins=50,
+                                          figsize=(24, 18), title="State Probability Evolution Over Phase"):
+    """
+    Visualize the evolution of state probability densities over phase for x, y, z components.
+    Each subplot shows how the probability distribution of a state component changes with phase.
+    The z-axis (or color intensity) represents the probability density, normalized so that for each
+    phase, the probabilities sum to 1.
+    
+    This creates a beautiful 3D visualization showing:
+    - X-axis: Phase progression (0 to 1)
+    - Y-axis: Component value (position in meters)
+    - Z-axis/Color: Probability density (normalized per phase)
+    
+    Args:
+        ee_state_tensor: torch.tensor [n_demos, n_bins, 7], end-effector poses (pos + quat)
+        demo_keys: list of demo keys corresponding to each trajectory
+        nan_mask: torch.tensor [n_demos, n_bins], boolean mask for NaN values (optional)
+        phase_tensor: torch.tensor [n_demos, n_bins, 1], phase values (optional)
+        n_density_bins: int, number of bins for probability density estimation along each component axis
+        figsize: tuple, figure size (default (20, 8))
+        title: str, overall figure title
+    
+    Returns:
+        fig: matplotlib figure object
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpl_toolkits.mplot3d import Axes3D
+    from scipy import stats
+    
+    n_demos, n_phase_bins, _ = ee_state_tensor.shape
+    
+    # Convert to numpy
+    ee_state_np = ee_state_tensor.cpu().numpy()
+    
+    # Extract positions (x, y, z)
+    positions = ee_state_np[:, :, :3]  # [n_demos, n_phase_bins, 3]
+    
+    # Get phase values
+    if phase_tensor is not None:
+        phase_np = phase_tensor.cpu().numpy()[:, :, 0]  # [n_demos, n_phase_bins]
+        phase_bins = np.linspace(0, 1, n_phase_bins)
+    else:
+        # Use normalized time steps as phase
+        phase_bins = np.linspace(0, 1, n_phase_bins)
+        phase_np = np.tile(phase_bins, (n_demos, 1))
+    
+    # Create figure with 3 subplots (one for each component)
+    fig = plt.figure(figsize=figsize)
+    from matplotlib.gridspec import GridSpec
+    gs = GridSpec(3, 1, figure=fig, hspace=0.35, left=0.08, right=0.95, top=0.94, bottom=0.04)
+    
+    component_names = ['X Position', 'Y Position', 'Z Position']
+    component_labels = ['x (m)', 'y (m)', 'z (m)']
+    
+    # First pass: compute all probability grids to find global max for consistent scaling
+    all_probability_grids = []
+    all_val_bins = []
+    all_val_centers = []
+    
+    for comp_idx in range(3):
+        # Extract component values for all demos
+        component_values = positions[:, :, comp_idx]  # [n_demos, n_phase_bins]
+        
+        # Determine value range for this component
+        if nan_mask is not None:
+            valid_mask = ~nan_mask.cpu().numpy()
+            valid_values = component_values[valid_mask]
+        else:
+            valid_values = component_values[~np.isnan(component_values)]
+        
+        val_min, val_max = valid_values.min(), valid_values.max()
+        val_range = val_max - val_min
+        val_bins = np.linspace(val_min - 0.05*val_range, val_max + 0.05*val_range, n_density_bins)
+        val_centers = (val_bins[:-1] + val_bins[1:]) / 2
+        
+        all_val_bins.append(val_bins)
+        all_val_centers.append(val_centers)
+        
+        # Create probability density grid
+        # Shape: [n_phase_bins, n_density_bins]
+        probability_grid = np.zeros((n_phase_bins, n_density_bins - 1))
+        
+        # For each phase bin, compute normalized histogram
+        for phase_idx in range(n_phase_bins):
+            # Collect all trajectory values at this phase
+            values_at_phase = component_values[:, phase_idx]
+            
+            # Remove NaN values
+            if nan_mask is not None:
+                valid = ~nan_mask[:, phase_idx].cpu().numpy()
+                values_at_phase = values_at_phase[valid]
+            else:
+                values_at_phase = values_at_phase[~np.isnan(values_at_phase)]
+            
+            if len(values_at_phase) > 0:
+                # Compute histogram (counts)
+                counts, _ = np.histogram(values_at_phase, bins=val_bins)
+                
+                # Normalize to get probability density (sum = 1)
+                total = counts.sum()
+                if total > 0:
+                    probability_grid[phase_idx, :] = counts / total
+        
+        all_probability_grids.append(probability_grid)
+    
+    # Find global maximum probability for consistent scaling
+    global_max_prob = max(grid.max() for grid in all_probability_grids)
+    
+    # Second pass: create plots with consistent scaling
+    for comp_idx in range(3):
+        ax = fig.add_subplot(gs[comp_idx, 0], projection='3d')
+        
+        val_bins = all_val_bins[comp_idx]
+        val_centers = all_val_centers[comp_idx]
+        probability_grid = all_probability_grids[comp_idx]
+        
+        # Create meshgrid for 3D surface
+        Phase, Value = np.meshgrid(phase_bins, val_centers)
+        Probability = probability_grid.T  # Transpose to match meshgrid shape
+        
+        # Plot surface with consistent color scale
+        surf = ax.plot_surface(Phase, Value, Probability, 
+                              cmap='viridis', 
+                              alpha=0.9,
+                              edgecolor='none',
+                              vmin=0,
+                              vmax=global_max_prob)
+        
+        # Add contour lines at the base for better visualization
+        ax.contour(Phase, Value, Probability, 
+                  zdir='z', 
+                  offset=0, 
+                  cmap='viridis',
+                  alpha=0.4,
+                  linewidths=0.5)
+        
+        # Customize plot
+        ax.set_xlabel('Phase', fontsize=10, labelpad=8)
+        ax.set_ylabel(component_labels[comp_idx], fontsize=10, labelpad=8)
+        ax.set_zlabel('Probability Density', fontsize=10, labelpad=8)
+        ax.set_title(component_names[comp_idx], fontsize=12, fontweight='bold', pad=15)
+        
+        # Set consistent Z-axis limits
+        ax.set_zlim(0, global_max_prob)
+        
+        # Set viewing angle with phase axis parallel to figure (left to right)
+        ax.view_init(elev=25, azim=-90)
+        
+        # Adjust box aspect to make phase axis much wider
+        ax.set_box_aspect(aspect=(9, 3, 1.5))
+        
+        # Add colorbar
+        cbar = fig.colorbar(surf, ax=ax, shrink=0.8, aspect=15, pad=0.05)
+        cbar.set_label('Probability', rotation=270, labelpad=15, fontsize=9)
+        
+        # Grid
+        ax.grid(True, alpha=0.3)
+    
+    # Overall title
+    fig.suptitle(title, fontsize=16, fontweight='bold', y=0.97)
     
     return fig
 
@@ -1848,6 +2024,22 @@ def test_and_visualize(args):
     fig.savefig(fig_path, dpi=150, bbox_inches='tight')
     print(f"\nSaved trajectory visualization to: {fig_path}")
     plt.show()
+    
+    # Visualize probability evolution over phase
+    print(f"\n1.3. Visualizing state probability evolution over phase:")
+    fig_prob = visualize_state_probability_evolution(
+        ee_state_tensor, demo_tensor_keys, nan_mask,
+        phase_tensor=phase_tensor,
+        n_density_bins=50
+    )
+    fig_prob_path_png = os.path.join(dataset_dir, "state_probability_evolution.png")
+    fig_prob_path_pdf = os.path.join(dataset_dir, "state_probability_evolution.pdf")
+    fig_prob.savefig(fig_prob_path_png, dpi=150, bbox_inches='tight')
+    fig_prob.savefig(fig_prob_path_pdf, bbox_inches='tight')
+    print(f"Saved state probability evolution visualization to:")
+    print(f"  PNG: {fig_prob_path_png}")
+    print(f"  PDF: {fig_prob_path_pdf}")
+    plt.show()
 
     #################################################################
     # True training distribution score estimation demo
@@ -2046,5 +2238,5 @@ if __name__ == "__main__":
             else:
                 save_path = args.dataset + "_w_cdm"
 
-            load_and_checkdivergence_and_score(save_path)
+            load_and_check_divergence_and_score(save_path)
 

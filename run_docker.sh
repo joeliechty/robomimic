@@ -10,7 +10,7 @@ docker run -it \
   --env="QT_X11_NO_MITSHM=1" \
   --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
   --volume="$(pwd):/app/robomimic" \
-  --shm-size=16g \
+  --shm-size=32g \
   --workdir="/app/robomimic" \
   robomimic \
   /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && bash"
