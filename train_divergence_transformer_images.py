@@ -100,6 +100,11 @@ def parse_args():
         action="store_true",
         help="Train image encoders end-to-end using raw RGB observations"
     )
+    parser.add_argument(
+        "--validate", "-V",
+        action="store_true",
+        help="set this flag to run validation during training"
+    )
     return parser.parse_args()
 
 # --- Monkey-patch for observation history buffering during rollout ---
@@ -110,9 +115,14 @@ def get_action_with_history(self, obs_dict, goal_dict=None):
     if not hasattr(self, "obs_history"):
         self.obs_history = {}
         self.context_length = self.algo_config.transformer.context_length
+    
+    # Filter obs_dict to only include keys the policy expects
+    # Use the observation keys from the observation encoder
+    expected_keys = self.obs_shapes.keys()
+    filtered_obs_dict = {k: v for k, v in obs_dict.items() if k in expected_keys}
         
     # Append current obs to history
-    for k, v in obs_dict.items():
+    for k, v in filtered_obs_dict.items():
         if k not in self.obs_history:
             self.obs_history[k] = []
         self.obs_history[k].append(v)
@@ -229,13 +239,13 @@ else:
     dataset_suffix = ""
 
 if args.dataset == "lift":
-    target = f"dataset/lift/low_dim_v15{dataset_suffix}_w_cdm.hdf5"
+    target = f"datasets/lift/low_dim_v15{dataset_suffix}_w_cdm.hdf5"
 elif args.dataset == "can":
-    target = f"dataset/can/can_feats{dataset_suffix}_w_cdm.hdf5"
-    source = f"dataset/can/can_demo.hdf5"
+    target = f"datasets/can/can_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"datasets/can/can_demo.hdf5"
 elif args.dataset == "square":
-    target = f"dataset/square/square_feats{dataset_suffix}_w_cdm.hdf5"
-    source = f"dataset/square/square_demo.hdf5"
+    target = f"datasets/square/square_feats{dataset_suffix}_w_cdm.hdf5"
+    source = f"datasets/square/square_demo.hdf5"
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
@@ -360,9 +370,32 @@ with config.values_unlocked():
     # Set experiment name with dataset portion, epochs, and save frequency
     config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}" #_exp{exp_num}"
     
-    # Validation settings (disable to keep it simple for now)
-    config.experiment.validate = False 
-    config.experiment.rollout.enabled = False
+    # Rollout settings
+    if args.validate:
+        config.experiment.rollout.enabled = True
+        config.experiment.rollout.rate = args.save_freq
+        config.experiment.rollout.n = 50  # number of rollouts per evaluation
+        config.experiment.rollout.horizon = 400  # max steps per rollout
+        
+        # Enable rendering for both video and observations
+        config.experiment.render = True
+        config.experiment.render_video = True
+        config.experiment.keep_all_videos = True # If False, only saves video for the best checkpoint
+        
+        # CRITICAL: When using images, configure environment to provide RGB observations during rollout
+        if args.end_to_end_image_training:
+            config.experiment.env_meta_update_dict = {
+                "env_kwargs": {
+                    "has_renderer": False,  # Set to False for offscreen rendering
+                    "has_offscreen_renderer": True,  # Enable offscreen rendering for observations
+                    "use_camera_obs": True,  # Enable camera observations
+                    "camera_names": ["robot0_eye_in_hand", "agentview"],  # Match training cameras
+                    "camera_heights": 84,
+                    "camera_widths": 84,
+                }
+            }
+    else:
+        config.experiment.rollout.enabled = False
 
 # Print config to verify
 print("Training Configuration:")
