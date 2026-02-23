@@ -324,9 +324,10 @@ with config.values_unlocked():
         config.observation.encoder.rgb.core_class = "VisualCore"
         config.observation.encoder.rgb.core_kwargs = {
             "backbone_class": "ResNet18Conv",
+            "pool_class": "SpatialSoftmax",
             "feature_dimension": 512,
             "pretrained": False,
-            "flatten": True,
+            "flatten": False,
         }
 
         config.observation.encoder.rgb.share = False
