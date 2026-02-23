@@ -1501,7 +1501,9 @@ def visualize_state_probability_evolution_per_axis(
     phase_bins = np.linspace(0, 1, n_phase_bins)
 
     # Snapshot phases evenly spaced, not including 0
-    snapshot_phases = np.linspace(0, 1, n_snapshots + 1)[1:]  # e.g. [0.2, 0.4, 0.6, 0.8, 1.0]
+    snapshot_phases = np.linspace(0, 1, n_snapshots)  # e.g. [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+    # snapshot_phases = np.linspace(0, 1, n_snapshots + 1)[1:]  # e.g. [0.2, 0.4, 0.6, 0.8, 1.0]
+    # snapshot_phases[-1] = min(snapshot_phases[-1], 0.99)
 
     component_names = ['X Position', 'Y Position', 'Z Position']
     component_labels = ['x (m)', 'y (m)', 'z (m)']
@@ -1588,7 +1590,7 @@ def visualize_state_probability_evolution_per_axis(
             ax_heat.axhline(y=sp, color='white', linestyle='--', alpha=0.6, linewidth=1.2)
 
         # ── Right column: 3D snapshot subplots stacked vertically ─────────────
-        gs_3d = GridSpecFromSubplotSpec(n_snapshots, 1, subplot_spec=gs[0, 1], hspace=0.0)
+        gs_3d = GridSpecFromSubplotSpec(n_snapshots, 1, subplot_spec=gs[0, 1], hspace=0.05)
 
         # Full meshgrid (used for both the faded background and the opaque front)
         Phase_full, Value_full = np.meshgrid(phase_bins, val_centers)
@@ -1601,7 +1603,9 @@ def visualize_state_probability_evolution_per_axis(
             cut_idx = int(np.searchsorted(phase_bins, snap_phase, side='right'))
             cut_idx = min(cut_idx, len(phase_bins))
 
-            # Faded full surface for context
+            # Faded full surface for context — always drawn to ensure
+            # matplotlib 3D auto-scaling respects the full axis bounds
+            is_full_range = cut_idx >= len(phase_bins)
             ax3d.plot_surface(
                 Phase_full, Value_full, Probability_full,
                 cmap='viridis', alpha=0.12, edgecolor='none',
@@ -1627,6 +1631,33 @@ def visualize_state_probability_evolution_per_axis(
                 VX = np.full_like(VY, cut_phase_val)
                 ax3d.plot_surface(VX, VY, VZ, color='white', alpha=0.25, edgecolor='none')
 
+                # Red outline: probability profile curve at the cut phase
+                profile = Probability_full[:, cut_idx - 1]  # [n_val_centers]
+                ax3d.plot(
+                    np.full_like(val_centers, cut_phase_val),
+                    val_centers, profile,
+                    color='red', linewidth=1.5, zorder=10
+                )
+                # Red baseline at the cut phase
+                ax3d.plot(
+                    np.full_like(val_centers, cut_phase_val),
+                    val_centers, np.zeros_like(val_centers),
+                    color='red', linewidth=0.8, alpha=0.7, zorder=10
+                )
+                # Red vertical edges closing the slice (low-value and high-value sides)
+                ax3d.plot(
+                    [cut_phase_val, cut_phase_val],
+                    [val_centers[0], val_centers[0]],
+                    [0, profile[0]],
+                    color='red', linewidth=0.8, alpha=0.7, zorder=10
+                )
+                ax3d.plot(
+                    [cut_phase_val, cut_phase_val],
+                    [val_centers[-1], val_centers[-1]],
+                    [0, profile[-1]],
+                    color='red', linewidth=0.8, alpha=0.7, zorder=10
+                )
+
             ax3d.set_xlabel('Phase', fontsize=6, labelpad=1)
             ax3d.set_ylabel(component_labels[comp_idx], fontsize=6, labelpad=1)
             ax3d.set_zlabel('Prob.', fontsize=6, labelpad=1)
@@ -1638,10 +1669,10 @@ def visualize_state_probability_evolution_per_axis(
             ax3d.tick_params(labelsize=5, pad=0)
 
             try:
-                ax3d.set_box_aspect(aspect=(3, 2, 1), zoom=1.3)
+                ax3d.set_box_aspect(aspect=(3, 2, 1), zoom=1.0)
             except TypeError:
                 ax3d.set_box_aspect(aspect=(3, 2, 1))
-                ax3d.dist = 7
+                ax3d.dist = 8
 
         # fig.suptitle(f'{title} — {component_names[comp_idx]}',
         #              fontsize=14, fontweight='bold', y=0.97)

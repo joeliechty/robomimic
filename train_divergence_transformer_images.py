@@ -342,7 +342,7 @@ with config.values_unlocked():
             "pool_class": "SpatialSoftmax",
             "feature_dimension": 512,
             "pretrained": False,
-            "flatten": False,
+            "flatten": True,
         }
 
         config.observation.encoder.rgb.share = False
