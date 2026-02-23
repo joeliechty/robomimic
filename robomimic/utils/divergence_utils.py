@@ -1323,17 +1323,16 @@ def visualize_observation_trajectories(ee_state_tensor, demo_keys, nan_mask=None
 
 def visualize_state_probability_evolution(ee_state_tensor, demo_keys, nan_mask=None, 
                                           phase_tensor=None, n_density_bins=50,
-                                          figsize=(24, 18), title="State Probability Evolution Over Phase"):
+                                          figsize=(12, 18), title="State Probability Evolution Over Phase"):
     """
     Visualize the evolution of state probability densities over phase for x, y, z components.
-    Each subplot shows how the probability distribution of a state component changes with phase.
-    The z-axis (or color intensity) represents the probability density, normalized so that for each
-    phase, the probabilities sum to 1.
+    Each subplot shows how the probability distribution of a state component changes with phase
+    as a 2D heatmap, where color intensity represents the probability density normalized so that
+    for each phase bin the probabilities sum to 1.
     
-    This creates a beautiful 3D visualization showing:
     - X-axis: Phase progression (0 to 1)
     - Y-axis: Component value (position in meters)
-    - Z-axis/Color: Probability density (normalized per phase)
+    - Color: Probability density (normalized per phase)
     
     Args:
         ee_state_tensor: torch.tensor [n_demos, n_bins, 7], end-effector poses (pos + quat)
@@ -1341,7 +1340,7 @@ def visualize_state_probability_evolution(ee_state_tensor, demo_keys, nan_mask=N
         nan_mask: torch.tensor [n_demos, n_bins], boolean mask for NaN values (optional)
         phase_tensor: torch.tensor [n_demos, n_bins, 1], phase values (optional)
         n_density_bins: int, number of bins for probability density estimation along each component axis
-        figsize: tuple, figure size (default (20, 8))
+        figsize: tuple, figure size (default (24, 18))
         title: str, overall figure title
     
     Returns:
@@ -1349,8 +1348,6 @@ def visualize_state_probability_evolution(ee_state_tensor, demo_keys, nan_mask=N
     """
     import matplotlib.pyplot as plt
     import numpy as np
-    from mpl_toolkits.mplot3d import Axes3D
-    from scipy import stats
     
     n_demos, n_phase_bins, _ = ee_state_tensor.shape
     
@@ -1370,9 +1367,8 @@ def visualize_state_probability_evolution(ee_state_tensor, demo_keys, nan_mask=N
         phase_np = np.tile(phase_bins, (n_demos, 1))
     
     # Create figure with 3 subplots (one for each component)
-    fig = plt.figure(figsize=figsize)
-    from matplotlib.gridspec import GridSpec
-    gs = GridSpec(3, 1, figure=fig, hspace=0.35, left=0.08, right=0.95, top=0.94, bottom=0.04)
+    fig, axes = plt.subplots(3, 1, figsize=figsize)
+    fig.subplots_adjust(hspace=0.4, left=0.08, right=0.92, top=0.93, bottom=0.06)
     
     component_names = ['X Position', 'Y Position', 'Z Position']
     component_labels = ['x (m)', 'y (m)', 'z (m)']
@@ -1431,60 +1427,227 @@ def visualize_state_probability_evolution(ee_state_tensor, demo_keys, nan_mask=N
     # Find global maximum probability for consistent scaling
     global_max_prob = max(grid.max() for grid in all_probability_grids)
     
-    # Second pass: create plots with consistent scaling
+    # Second pass: create 2D heatmap plots with consistent color scaling
     for comp_idx in range(3):
-        ax = fig.add_subplot(gs[comp_idx, 0], projection='3d')
+        ax = axes[comp_idx]
         
         val_bins = all_val_bins[comp_idx]
-        val_centers = all_val_centers[comp_idx]
         probability_grid = all_probability_grids[comp_idx]
         
-        # Create meshgrid for 3D surface
-        Phase, Value = np.meshgrid(phase_bins, val_centers)
-        Probability = probability_grid.T  # Transpose to match meshgrid shape
+        # probability_grid shape: [n_phase_bins, n_density_bins-1]
+        # pcolormesh expects (Y, X) orientation, so transpose so rows=value bins, cols=phase bins
+        im = ax.pcolormesh(
+            phase_bins,
+            val_bins[:-1],
+            probability_grid.T,
+            cmap='viridis',
+            vmin=0,
+            vmax=global_max_prob,
+            shading='auto'
+        )
         
-        # Plot surface with consistent color scale
-        surf = ax.plot_surface(Phase, Value, Probability, 
-                              cmap='viridis', 
-                              alpha=0.9,
-                              edgecolor='none',
-                              vmin=0,
-                              vmax=global_max_prob)
-        
-        # Add contour lines at the base for better visualization
-        ax.contour(Phase, Value, Probability, 
-                  zdir='z', 
-                  offset=0, 
-                  cmap='viridis',
-                  alpha=0.4,
-                  linewidths=0.5)
-        
-        # Customize plot
-        ax.set_xlabel('Phase', fontsize=10, labelpad=8)
-        ax.set_ylabel(component_labels[comp_idx], fontsize=10, labelpad=8)
-        ax.set_zlabel('Probability Density', fontsize=10, labelpad=8)
-        ax.set_title(component_names[comp_idx], fontsize=12, fontweight='bold', pad=15)
-        
-        # Set consistent Z-axis limits
-        ax.set_zlim(0, global_max_prob)
-        
-        # Set viewing angle with phase axis parallel to figure (left to right)
-        ax.view_init(elev=25, azim=-90)
-        
-        # Adjust box aspect to make phase axis much wider
-        ax.set_box_aspect(aspect=(9, 3, 1.5))
-        
-        # Add colorbar
-        cbar = fig.colorbar(surf, ax=ax, shrink=0.8, aspect=15, pad=0.05)
+        # Colorbar
+        cbar = fig.colorbar(im, ax=ax, pad=0.01)
         cbar.set_label('Probability', rotation=270, labelpad=15, fontsize=9)
         
-        # Grid
-        ax.grid(True, alpha=0.3)
+        # Labels and title
+        ax.set_xlabel('Phase', fontsize=10)
+        ax.set_ylabel(component_labels[comp_idx], fontsize=10)
+        ax.set_title(component_names[comp_idx], fontsize=12, fontweight='bold')
+        ax.set_xlim(phase_bins[0], phase_bins[-1])
+        ax.set_ylim(val_bins[0], val_bins[-1])
     
     # Overall title
     fig.suptitle(title, fontsize=16, fontweight='bold', y=0.97)
     
     return fig
+
+def visualize_state_probability_evolution_per_axis(
+    ee_state_tensor, demo_keys, nan_mask=None,
+    phase_tensor=None, n_density_bins=50,
+    n_snapshots=4,
+    figsize=(12, 12),
+    title="State Probability Evolution"
+):
+    """
+    For each position axis (x, y, z), creates a separate figure containing:
+    - Top: 2D heatmap of the full probability distribution over phase, with dashed
+      vertical lines marking each snapshot phase.
+    - Bottom: a row of n_snapshots 3D surface plots, each showing the distribution
+      up to a particular phase (solid/opaque) with the remainder shown faded for context.
+
+    Args:
+        ee_state_tensor: torch.tensor [n_demos, n_bins, 7], end-effector poses (pos + quat)
+        demo_keys: list of demo keys corresponding to each trajectory
+        nan_mask: torch.tensor [n_demos, n_bins], boolean mask for NaN values (optional)
+        phase_tensor: torch.tensor [n_demos, n_bins, 1], phase values (optional)
+        n_density_bins: int, number of bins for probability density estimation
+        n_snapshots: int, number of 3D phase-snapshot subplots (default 4)
+        figsize: tuple, figure size for each per-axis figure (default (20, 12))
+        title: str, base title (axis name is appended)
+
+    Returns:
+        figs: list of 3 matplotlib figure objects, one per axis (x, y, z)
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpl_toolkits.mplot3d import Axes3D
+    from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
+
+    n_demos, n_phase_bins, _ = ee_state_tensor.shape
+    ee_state_np = ee_state_tensor.cpu().numpy()
+    positions = ee_state_np[:, :, :3]  # [n_demos, n_phase_bins, 3]
+
+    phase_bins = np.linspace(0, 1, n_phase_bins)
+
+    # Snapshot phases evenly spaced, not including 0
+    snapshot_phases = np.linspace(0, 1, n_snapshots + 1)[1:]  # e.g. [0.2, 0.4, 0.6, 0.8, 1.0]
+
+    component_names = ['X Position', 'Y Position', 'Z Position']
+    component_labels = ['x (m)', 'y (m)', 'z (m)']
+
+    # ── First pass: compute probability grids for all components ──────────────
+    all_probability_grids = []
+    all_val_bins = []
+    all_val_centers = []
+
+    for comp_idx in range(3):
+        component_values = positions[:, :, comp_idx]  # [n_demos, n_phase_bins]
+
+        if nan_mask is not None:
+            valid_mask = ~nan_mask.cpu().numpy()
+            valid_values = component_values[valid_mask]
+        else:
+            valid_values = component_values[~np.isnan(component_values)]
+
+        val_min, val_max = valid_values.min(), valid_values.max()
+        val_range = val_max - val_min
+        val_bins = np.linspace(val_min - 0.05 * val_range, val_max + 0.05 * val_range, n_density_bins)
+        val_centers = (val_bins[:-1] + val_bins[1:]) / 2
+
+        all_val_bins.append(val_bins)
+        all_val_centers.append(val_centers)
+
+        probability_grid = np.zeros((n_phase_bins, n_density_bins - 1))
+
+        for phase_idx in range(n_phase_bins):
+            values_at_phase = component_values[:, phase_idx]
+            if nan_mask is not None:
+                valid = ~nan_mask[:, phase_idx].cpu().numpy()
+                values_at_phase = values_at_phase[valid]
+            else:
+                values_at_phase = values_at_phase[~np.isnan(values_at_phase)]
+
+            if len(values_at_phase) > 0:
+                counts, _ = np.histogram(values_at_phase, bins=val_bins)
+                total = counts.sum()
+                if total > 0:
+                    probability_grid[phase_idx, :] = counts / total
+
+        all_probability_grids.append(probability_grid)
+
+    global_max_prob = max(grid.max() for grid in all_probability_grids)
+
+    # ── Second pass: build one figure per axis ────────────────────────────────
+    figs = []
+
+    for comp_idx in range(3):
+        val_bins = all_val_bins[comp_idx]
+        val_centers = all_val_centers[comp_idx]
+        probability_grid = all_probability_grids[comp_idx]
+
+        # Per-axis color scale
+        axis_max_prob = probability_grid.max()
+
+        fig = plt.figure(figsize=figsize)
+        # Layout: 1 row, 2 columns — left=heatmap, right=stacked 3D snapshots
+        # Negative wspace compensates for the intrinsic whitespace 3D axes add
+        gs = GridSpec(1, 2, figure=fig,
+                      width_ratios=[1, n_snapshots],
+                      wspace=-0.25,
+                      left=0.07, right=0.97, top=0.91, bottom=0.06)
+
+        # ── Left column: 2D heatmap (phase on Y axis, value on X axis) ────────
+        ax_heat = fig.add_subplot(gs[0, 0])
+        # Transpose the grid so phase is on Y axis: plot shape [n_phase_bins, n_val_centers]
+        im = ax_heat.pcolormesh(
+            val_bins[:-1], phase_bins, probability_grid,
+            cmap='viridis', vmin=0, vmax=axis_max_prob, shading='auto'
+        )
+        cbar = fig.colorbar(im, ax=ax_heat, pad=0.005, location='top', shrink=0.8)
+        cbar.set_label('Probability', fontsize=9)
+        ax_heat.set_xlabel(component_labels[comp_idx], fontsize=10)
+        ax_heat.set_ylabel('Phase', fontsize=10)
+        # ax_heat.set_title(f'{component_names[comp_idx]}\nFull Distribution',
+                        #   fontsize=11, fontweight='bold')
+        ax_heat.set_xlim(val_bins[0], val_bins[-1])
+        ax_heat.set_ylim(phase_bins[-1], phase_bins[0])  # phase=0 at top, phase=1 at bottom
+
+        # Mark snapshot phases as dashed horizontal lines on the heatmap
+        for sp in snapshot_phases:
+            ax_heat.axhline(y=sp, color='white', linestyle='--', alpha=0.6, linewidth=1.2)
+
+        # ── Right column: 3D snapshot subplots stacked vertically ─────────────
+        gs_3d = GridSpecFromSubplotSpec(n_snapshots, 1, subplot_spec=gs[0, 1], hspace=0.0)
+
+        # Full meshgrid (used for both the faded background and the opaque front)
+        Phase_full, Value_full = np.meshgrid(phase_bins, val_centers)
+        Probability_full = probability_grid.T  # [n_val_centers, n_phase_bins]
+
+        for snap_idx, snap_phase in enumerate(snapshot_phases):
+            ax3d = fig.add_subplot(gs_3d[snap_idx, 0], projection='3d')
+
+            # Index up to (and including) the snapshot phase
+            cut_idx = int(np.searchsorted(phase_bins, snap_phase, side='right'))
+            cut_idx = min(cut_idx, len(phase_bins))
+
+            # Faded full surface for context
+            ax3d.plot_surface(
+                Phase_full, Value_full, Probability_full,
+                cmap='viridis', alpha=0.12, edgecolor='none',
+                vmin=0, vmax=axis_max_prob
+            )
+
+            # Opaque surface up to the snapshot phase
+            if cut_idx >= 2:
+                ax3d.plot_surface(
+                    Phase_full[:, :cut_idx],
+                    Value_full[:, :cut_idx],
+                    Probability_full[:, :cut_idx],
+                    cmap='viridis', alpha=0.90, edgecolor='none',
+                    vmin=0, vmax=axis_max_prob
+                )
+
+            # Draw a thin vertical plane at the cut phase to mark the slice
+            if cut_idx >= 1:
+                cut_phase_val = phase_bins[cut_idx - 1]
+                vplane_y = np.array([val_bins[0], val_bins[-1]])
+                vplane_z = np.array([0, axis_max_prob])
+                VY, VZ = np.meshgrid(vplane_y, vplane_z)
+                VX = np.full_like(VY, cut_phase_val)
+                ax3d.plot_surface(VX, VY, VZ, color='white', alpha=0.25, edgecolor='none')
+
+            ax3d.set_xlabel('Phase', fontsize=6, labelpad=1)
+            ax3d.set_ylabel(component_labels[comp_idx], fontsize=6, labelpad=1)
+            ax3d.set_zlabel('Prob.', fontsize=6, labelpad=1)
+            ax3d.set_title(rf'$\rho \leq {snap_phase:.2f}$', fontsize=9, fontweight='bold', y=0.9, loc='left')
+            ax3d.set_zlim(0, axis_max_prob)
+            ax3d.set_xlim(phase_bins[0], phase_bins[-1])
+            ax3d.set_ylim(val_bins[0], val_bins[-1])
+            ax3d.view_init(elev=28, azim=-55)
+            ax3d.tick_params(labelsize=5, pad=0)
+
+            try:
+                ax3d.set_box_aspect(aspect=(3, 2, 1), zoom=1.3)
+            except TypeError:
+                ax3d.set_box_aspect(aspect=(3, 2, 1))
+                ax3d.dist = 7
+
+        # fig.suptitle(f'{title} — {component_names[comp_idx]}',
+        #              fontsize=14, fontweight='bold', y=0.97)
+        figs.append(fig)
+
+    return figs
 
 def visualize_score_and_div_for_trajectories(
     ee_state_tensor,
@@ -2040,6 +2203,26 @@ def test_and_visualize(args):
     print(f"  PNG: {fig_prob_path_png}")
     print(f"  PDF: {fig_prob_path_pdf}")
     plt.show()
+
+    # Visualize per-axis probability evolution (heatmap + 3D phase snapshots)
+    print(f"\n1.4. Visualizing per-axis state probability evolution (heatmap + 3D snapshots):")
+    axis_names = ['x', 'y', 'z']
+    figs_per_axis = visualize_state_probability_evolution_per_axis(
+        ee_state_tensor, demo_tensor_keys, nan_mask,
+        phase_tensor=phase_tensor,
+        n_density_bins=50,
+        n_snapshots=4,
+    )
+    for axis_idx, fig_axis in enumerate(figs_per_axis):
+        axis_name = axis_names[axis_idx]
+        fig_axis_path_png = os.path.join(dataset_dir, f"state_probability_evolution_{axis_name}_axis.png")
+        fig_axis_path_pdf = os.path.join(dataset_dir, f"state_probability_evolution_{axis_name}_axis.pdf")
+        fig_axis.savefig(fig_axis_path_png, dpi=150, bbox_inches='tight')
+        fig_axis.savefig(fig_axis_path_pdf, bbox_inches='tight')
+        print(f"  Saved {axis_name}-axis figure:")
+        print(f"    PNG: {fig_axis_path_png}")
+        print(f"    PDF: {fig_axis_path_pdf}")
+        plt.show()
 
     #################################################################
     # True training distribution score estimation demo
