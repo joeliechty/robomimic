@@ -113,7 +113,7 @@ def find_training_dataset(task, dataset_size, divergence, images):
     
     # Determine dataset filename
     if task == "lift":
-        base_name = "low_dim_v15"
+        base_name = "lift_feats"
     elif task == "can":
         base_name = "can_feats"
     elif task == "square":

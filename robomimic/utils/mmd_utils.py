@@ -579,7 +579,7 @@ def parse_args():
 if __name__ == "__main__":
 
     args = parse_args()
-    args.training_dataset = "/app/robomimic/datasets/lift/low_dim_v15.hdf5"
+    args.training_dataset = "/app/robomimic/datasets/lift/lift_feats.hdf5"
     args.rollout_dataset = "/app/robomimic/eval_data/mmd_assessments/transformer_no_divergence/lift/F_500_20/epoch_100/predicted_actions.hdf5"
 
     mmd_per_timestep_np, t_action_tensor, r_action_tensor, t_phase_tensor, \

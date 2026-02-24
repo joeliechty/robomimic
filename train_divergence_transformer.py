@@ -178,7 +178,7 @@ else:
     dataset_suffix = ""
 
 if args.dataset == "lift":
-    args.dataset_path = f"/app/robomimic/datasets/lift/low_dim_v15{dataset_suffix}_w_cdm.hdf5"
+    args.dataset_path = f"/app/robomimic/datasets/lift/lift_feats{dataset_suffix}_w_cdm.hdf5"
 elif args.dataset == "can":
     args.dataset_path = f"/app/robomimic/datasets/can/can_feats{dataset_suffix}_w_cdm.hdf5"
 elif args.dataset == "square":
