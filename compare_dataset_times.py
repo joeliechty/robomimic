@@ -18,7 +18,7 @@ def load_time_data():
     
     # Mapping of task to filename pattern
     file_patterns = {
-        "lift": "low_dim_v15",
+        "lift": "lift_feats",
         "can": "can_feats",
         "square": "square_feats"
     }
