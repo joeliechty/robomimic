@@ -28,20 +28,11 @@ module load apptainer
 echo "Launching transformer CDM job for ${DATASET}..."
 
 # Launch Transformer WITH Divergence (-CDM flag)
-if [ "$DATASET" = "can" ] || [ "$DATASET" = "square" ]; then
-  apptainer exec \
-    --nv \
-    --bind $(pwd):/app/robomimic \
-    --pwd /app/robomimic \
-    $IMAGE_PATH \
-    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B 64 -V"
-else
-  apptainer exec \
-    --nv \
-    --bind $(pwd):/app/robomimic \
-    --pwd /app/robomimic \
-    $IMAGE_PATH \
-    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ}"
-fi
+apptainer exec \
+  --nv \
+  --bind $(pwd):/app/robomimic \
+  --pwd /app/robomimic \
+  $IMAGE_PATH \
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B 64 -V"
 
-echo "Job completed."
+echo "Launched transformer CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
