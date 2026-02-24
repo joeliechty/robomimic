@@ -1752,7 +1752,7 @@ def visualize_score_and_div_for_trajectories(
     
     # Create figure with subplots
     fig = plt.figure(figsize=figsize)
-    gs = fig.add_gridspec(6, 6, hspace=0.4, wspace=0.4, height_ratios=[1, 1, 1, 0.8, 0.8, 0.8])
+    gs = fig.add_gridspec(6, 6, hspace=0.7, wspace=0.4, height_ratios=[1, 1, 1, 0.8, 0.8, 0.8])
     
     # 3D trajectory plot (spans left 3 columns, all 3 top rows)
     ax_3d = fig.add_subplot(gs[:3, :3], projection='3d')
@@ -1989,14 +1989,14 @@ def visualize_score_and_div_for_trajectories(
                                color='darkgreen', linewidth=2)
             ax_score_lin_y.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
             ax_score_lin_y.grid(True, alpha=0.3)
-            ax_score_lin_y.set_ylabel('Score (m/s)', fontsize=9)
+            # ax_score_lin_y.set_ylabel('Score (m/s)', fontsize=9)
             ax_score_lin_y.set_title('Score: Linear Y', fontsize=10, fontweight='bold')
             
             ax_score_lin_z.plot(score_phase_values, score_np[valid_score_indices, 2], 
                                color='darkblue', linewidth=2)
             ax_score_lin_z.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
             ax_score_lin_z.grid(True, alpha=0.3)
-            ax_score_lin_z.set_ylabel('Score (m/s)', fontsize=9)
+            # ax_score_lin_z.set_ylabel('Score (m/s)', fontsize=9)
             ax_score_lin_z.set_title('Score: Linear Z', fontsize=10, fontweight='bold')
             
             # Angular (rotation) score components
@@ -2013,7 +2013,7 @@ def visualize_score_and_div_for_trajectories(
             ax_score_ang_y.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
             ax_score_ang_y.grid(True, alpha=0.3)
             ax_score_ang_y.set_xlabel('Phase' if phase_tensor is not None else 'Time Step', fontsize=9)
-            ax_score_ang_y.set_ylabel('Score (rad/s)', fontsize=9)
+            # ax_score_ang_y.set_ylabel('Score (rad/s)', fontsize=9)
             ax_score_ang_y.set_title('Score: Angular Y', fontsize=10, fontweight='bold')
             
             ax_score_ang_z.plot(score_phase_values, score_np[valid_score_indices, 5], 
@@ -2021,7 +2021,7 @@ def visualize_score_and_div_for_trajectories(
             ax_score_ang_z.axhline(y=0, color='k', linestyle='--', alpha=0.3, linewidth=1)
             ax_score_ang_z.grid(True, alpha=0.3)
             ax_score_ang_z.set_xlabel('Phase' if phase_tensor is not None else 'Time Step', fontsize=9)
-            ax_score_ang_z.set_ylabel('Score (rad/s)', fontsize=9)
+            # ax_score_ang_z.set_ylabel('Score (rad/s)', fontsize=9)
             ax_score_ang_z.set_title('Score: Angular Z', fontsize=10, fontweight='bold')
         
         # Plot divergence for selected trajectory with solid black line
@@ -2034,7 +2034,7 @@ def visualize_score_and_div_for_trajectories(
     ax_3d.set_xlabel('X Position (m)')
     ax_3d.set_ylabel('Y Position (m)')
     ax_3d.set_zlabel('Z Position (m)')
-    ax_3d.set_title('3D Trajectories (Selected in Black)', fontsize=12, fontweight='bold')
+    ax_3d.set_title('3D Trajectories', fontsize=12, fontweight='bold')
     ax_3d.legend(loc='upper right', fontsize=8)
     ax_3d.grid(True, alpha=0.3)
     
@@ -2084,7 +2084,14 @@ def visualize_score_and_div_for_trajectories(
     ax_yaw_cos.set_title('Yaw - Cosine', fontsize=10, fontweight='bold')
     ax_yaw_cos.grid(True, alpha=0.3)
     ax_yaw_cos.set_ylim([-1.1, 1.1])
-    
+
+    # Configure divergence subplot
+    ax_divergence.set_xlabel('Phase' if phase_tensor is not None else 'Time Step', fontsize=9)
+    ax_divergence.set_ylabel('Divergence', fontsize=9)
+    ax_divergence.set_title('Flow Field Divergence', fontsize=10, fontweight='bold')
+    ax_divergence.grid(True, alpha=0.3)
+    ax_divergence.legend(loc='upper right', fontsize=8)
+
     # Overall title
     fig.suptitle(title, fontsize=14, fontweight='bold', y=0.98)
     
@@ -2095,6 +2102,44 @@ def visualize_score_and_div_for_trajectories(
         pass  # Ignore tight_layout issues with 3D plots
     
     return fig
+
+def _get_evenly_spaced_images(data, demo_key, n_images=12, image_obs_key=None):
+    """
+    Grabs n_images evenly spaced images from the specified demo.
+
+    Args:
+        data (dict): Data dictionary returned by _load_training_data.
+        demo_key (str): Demo key to extract images from (e.g., 'demo_0').
+        n_images (int): Number of evenly spaced images to extract (default: 12).
+        image_obs_key (str): Observation key for image data. If None, auto-detects
+                             the first 4-D observation key (shape [T, H, W, C]).
+
+    Returns:
+        tuple: (images, indices)
+            - images: np.ndarray of shape [n_images, H, W, C]
+            - indices: list of int, the timestep indices that were selected
+    """
+    obs = data['get_obs'](demo_key)
+
+    # Auto-detect image key if not provided
+    if image_obs_key is None:
+        for key in obs.keys():
+            if obs[key].ndim == 4:  # [T, H, W, C]
+                image_obs_key = key
+                break
+        if image_obs_key is None:
+            raise ValueError(
+                f"No image observations found in demo '{demo_key}'. "
+                f"Available keys: {list(obs.keys())}"
+            )
+
+    image_data = obs[image_obs_key]  # [T, H, W, C]
+    T = image_data.shape[0]
+
+    indices = np.linspace(0, T - 1, n_images, dtype=int).tolist()
+    images = image_data[indices]  # [n_images, H, W, C]
+
+    return images, indices
 
 def test_and_visualize(args):
     ################################################################
@@ -2139,7 +2184,24 @@ def test_and_visualize(args):
     for obs_key in demo_data['obs'].keys():
         obs_data = demo_data['obs'][obs_key]
         print(f"   - {obs_key}: shape={obs_data.shape}, dtype={obs_data.dtype}")
-    
+
+    # Grab 6 evenly spaced images from demo_0
+    print(f"\n0.5. Grabbing 6 evenly spaced images from '{args.demo}'...")
+    images, img_indices = _get_evenly_spaced_images(data, args.demo, n_images=6)
+    print(f"   Image obs key auto-detected, images shape: {images.shape}")
+    print(f"   Selected timestep indices: {img_indices}")
+    fig_imgs, axes = plt.subplots(1, 6, figsize=(18, 3))
+    fig_imgs.suptitle(f"6 Evenly Spaced Images from '{args.demo}'", fontsize=14, fontweight='bold')
+    for ax, img, idx in zip(axes.flat, images, img_indices):
+        ax.imshow(img)
+        ax.set_title(f"t={idx}", fontsize=9)
+        ax.axis('off')
+    plt.tight_layout()
+    fig_imgs_path = os.path.join(dataset_dir, f"{args.demo}_evenly_spaced_images.png")
+    fig_imgs.savefig(fig_imgs_path, dpi=150, bbox_inches='tight')
+    print(f"   Saved to: {fig_imgs_path}")
+    plt.show()
+
     # Get specific observation
     if data['obs_keys']:
         first_obs_key = data['obs_keys'][0]
