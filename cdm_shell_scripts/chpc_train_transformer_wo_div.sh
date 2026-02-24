@@ -34,14 +34,14 @@ if [ "$DATASET" = "can" ] || [ "$DATASET" = "square" ]; then
     --bind $(pwd):/app/robomimic \
     --pwd /app/robomimic \
     $IMAGE_PATH \
-    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -CDM -L 0.0001 -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B 64 -V"
+    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B 64 -V"
 else
   apptainer exec \
     --nv \
     --bind $(pwd):/app/robomimic \
     --pwd /app/robomimic \
     $IMAGE_PATH \
-    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer.py -D ${DATASET} -CDM -L 0.0001 -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ}"
+    /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ}"
 fi
 
 echo "Job completed."
