@@ -110,6 +110,18 @@ def parse_args():
         action='store_true',
         help="set this flag to resume training from latest checkpoint"
     )
+    parser.add_argument(
+        "--cdm_patience",
+        type=int,
+        default=10,
+        help="number of epochs with no improvement before halving the CDM weight"
+    )
+    parser.add_argument(
+        "--cdm_decay_factor",
+        type=float,
+        default=0.5,
+        help="factor to multiply CDM weight by when a plateau is detected"
+    )
     return parser.parse_args()
 
 # --- Monkey-patch for observation history buffering during rollout ---
@@ -226,6 +238,64 @@ print("Applied BC_Transformer monkey-patch for process_batch_for_training (CDM)"
 # ----------------------------------------
 
 args = parse_args()
+
+# --- Monkey-patch for CDM Weight Decay on Plateau ---
+if args.use_divergence_loss:
+    _original_train_on_batch = bc.BC_Transformer.train_on_batch
+    _original_on_epoch_end = getattr(bc.BC_Transformer, "on_epoch_end", None)
+
+    def train_on_batch_with_loss_tracking(self, batch, epoch, validate=False):
+        info = _original_train_on_batch(self, batch, epoch, validate=validate)
+        if not validate:
+            if not hasattr(self, "_cdm_epoch_loss_sum"):
+                self._cdm_epoch_loss_sum = 0.0
+                self._cdm_epoch_batches = 0
+            loss_val = info.get("Loss", 0.0)
+            if isinstance(loss_val, torch.Tensor):
+                loss_val = loss_val.item()
+            self._cdm_epoch_loss_sum += loss_val
+            self._cdm_epoch_batches += 1
+        return info
+
+    def on_epoch_end_with_cdm_decay(self, epoch):
+        if _original_on_epoch_end is not None:
+            _original_on_epoch_end(self, epoch)
+
+        if not hasattr(self, "_cdm_epoch_loss_sum") or self._cdm_epoch_batches == 0:
+            return
+
+        avg_loss = self._cdm_epoch_loss_sum / self._cdm_epoch_batches
+        self._cdm_epoch_loss_sum = 0.0
+        self._cdm_epoch_batches = 0
+
+        if not hasattr(self, "_cdm_best_loss"):
+            self._cdm_best_loss = float("inf")
+            self._cdm_patience_counter = 0
+
+        if avg_loss < self._cdm_best_loss - 1e-6:
+            self._cdm_best_loss = avg_loss
+            self._cdm_patience_counter = 0
+        else:
+            self._cdm_patience_counter += 1
+            print(f"[Epoch {epoch}] No loss improvement ({avg_loss:.6f} >= best {self._cdm_best_loss:.6f}). "
+                  f"CDM plateau counter: {self._cdm_patience_counter}/{args.cdm_patience}")
+
+        if self._cdm_patience_counter >= args.cdm_patience:
+            current_weight = self.algo_config.loss.cdm_weight
+            new_weight = current_weight * args.cdm_decay_factor
+            if current_weight > 1e-10:
+                print(f"[Epoch {epoch}] Plateau detected — decaying CDM weight: {current_weight:.2e} -> {new_weight:.2e}")
+                with self.algo_config.values_unlocked():
+                    self.algo_config.loss.cdm_weight = new_weight
+                if hasattr(self, "cdm_weight"):
+                    self.cdm_weight = new_weight
+            self._cdm_patience_counter = 0  # reset after decay
+
+    bc.BC_Transformer.train_on_batch = train_on_batch_with_loss_tracking
+    bc.BC_Transformer.on_epoch_end = on_epoch_end_with_cdm_decay
+    print(f"Applied BC_Transformer monkey-patch for CDM weight decay on plateau "
+          f"(patience={args.cdm_patience}, decay_factor={args.cdm_decay_factor})")
+# -----------------------------------------------------
 
 if args.end_to_end_image_training:
     args.use_images = False
