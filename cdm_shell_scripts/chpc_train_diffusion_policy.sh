@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Check if arguments were passed
-if [ -z "$1" ] || [ -z "$2" ]; then
+if [ -z "$1" ] || [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ] || [ -z "$5" ] || [ -z "$6" ]; then
   echo "Error: You must provide a dataset name, dataset portion, portion ID, number of epochs, and save frequency."
   echo "Usage: bash train_transformer_w_div.sh <DATASET> <PORTION> <PORTION_ID> <EPOCHS> <SAVE_FREQ>"
   echo "Example: bash train_transformer_w_div.sh lift full 0 500 20"
@@ -10,6 +10,7 @@ if [ -z "$1" ] || [ -z "$2" ]; then
   echo "Portion IDs: 0, 1, 2, ..."
   echo "Epochs: number of training epochs"
   echo "Save Frequency: how often to save the model (in epochs)"
+  echo "Batch Size: training batch size"
   exit 1
 fi
 
@@ -18,6 +19,7 @@ PORTION=$2
 PORTION_ID=$3
 EPOCHS=$4
 SAVE_FREQ=$5
+BATCH_SIZE=$6
 
 # Define your Apptainer image path on scratch
 IMAGE_PATH="/scratch/general/vast/$USER/robomimic.sif"

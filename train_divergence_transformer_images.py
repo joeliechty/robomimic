@@ -291,7 +291,15 @@ if args.use_divergence_loss:
                     self.cdm_weight = new_weight
             self._cdm_patience_counter = 0  # reset after decay
 
+    _original_log_info = bc.BC_Transformer.log_info
+
+    def log_info_with_cdm_weight(self, info):
+        log = _original_log_info(self, info)
+        log["CDM_Weight"] = self.algo_config.loss.cdm_weight
+        return log
+
     bc.BC_Transformer.train_on_batch = train_on_batch_with_loss_tracking
+    bc.BC_Transformer.log_info = log_info_with_cdm_weight
     bc.BC_Transformer.on_epoch_end = on_epoch_end_with_cdm_decay
     print(f"Applied BC_Transformer monkey-patch for CDM weight decay on plateau "
           f"(patience={args.cdm_patience}, decay_factor={args.cdm_decay_factor})")
@@ -448,7 +456,7 @@ with config.values_unlocked():
     config.experiment.save.every_n_epochs = args.save_freq
     
     # Set experiment name with dataset portion, epochs, and save frequency
-    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}" #_exp{exp_num}"
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}_{cdm_weight}" #_exp{exp_num}"
     
     # Rollout settings
     if args.validate:

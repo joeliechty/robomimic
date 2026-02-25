@@ -141,3 +141,5 @@ exps/results/*
 robomimic/bc_divergence_results/*
 eval*/
 *.csv
+
+MUJOCO_LOG.TXT
