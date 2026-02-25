@@ -25,7 +25,8 @@ IMAGE_PATH="/scratch/general/vast/$USER/robomimic.sif"
 # Load Apptainer module
 module load apptainer
 
-echo "Launching transformer CDM job for ${DATASET}..."
+echo "Launching Diffusion Policy job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
+echo "Start time: $(date)"
 
 # Launch Transformer WITH Divergence (-CDM flag)
 apptainer exec \
@@ -35,5 +36,4 @@ apptainer exec \
   $IMAGE_PATH \
   /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_diffusion_policy_image.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -I"
 
-echo "Launched Diffusion Policy job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
-echo "Start time: $(date)"
+echo "Job finished for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
