@@ -556,8 +556,9 @@ class ResNet18Conv(ConvBase):
             out_shape ([int]): list of integers corresponding to output shape
         """
         assert(len(input_shape) == 3)
-        out_h = int(math.ceil(input_shape[1] / 32.))
-        out_w = int(math.ceil(input_shape[2] / 32.))
+        # Downsampling factor is 8 (not 32) because conv1 stride=1 and maxpool=Identity
+        out_h = int(math.ceil(input_shape[1] / 8.))
+        out_w = int(math.ceil(input_shape[2] / 8.))
         return [512, out_h, out_w]
 
     def __repr__(self):
