@@ -86,7 +86,16 @@ def parse_args():
         action="store_true",
         help="Train image encoders end-to-end using raw RGB observations"
     )
-
+    parser.add_argument(
+        "--validate", "-V",
+        action="store_true",
+        help="set this flag to run validation during training"
+    )
+    parser.add_argument(
+        "--resume",
+        action='store_true',
+        help="set this flag to resume training from latest checkpoint"
+    )
     return parser.parse_args()
 
 args = parse_args()
@@ -184,15 +193,11 @@ with config.values_unlocked():
 
         config.observation.encoder.rgb.share = False
 
-        config.observation.encoder.rgb.obs_randomizer_class = "CropColorRandomizer"
-        config.observation.encoder.rgb.obs_randomizer_kwargs = {
-            "crop_height": 76,
-            "crop_width": 76,
-            "brightness": 0.3,
-            "contrast": 0.3,
-            "saturation": 0.3,
-            "hue": 0.1,
-        }
+        config.observation.encoder.rgb.obs_randomizer_class = ["CropRandomizer", "ColorRandomizer"]
+        config.observation.encoder.rgb.obs_randomizer_kwargs = [
+            {"crop_height": 76, "crop_width": 76},
+            {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "hue": 0.1},
+        ]
         config.observation.encoder.rgb.freeze = False
     
     # Horizon parameters (key parameters for Diffusion Policy)
@@ -245,7 +250,31 @@ with config.values_unlocked():
     
     # Validation settings (disable to keep it simple for now)
     config.experiment.validate = False 
-    config.experiment.rollout.enabled = False
+    if args.validate:
+        config.experiment.rollout.enabled = True
+        config.experiment.rollout.rate = args.save_freq
+        config.experiment.rollout.n = 50  # number of rollouts per evaluation
+        config.experiment.rollout.horizon = 400  # max steps per rollout
+        
+        # Enable rendering for both video and observations
+        config.experiment.render = True
+        config.experiment.render_video = True
+        config.experiment.keep_all_videos = True # If False, only saves video for the best checkpoint
+        
+        # CRITICAL: When using images, configure environment to provide RGB observations during rollout
+        if args.end_to_end_image_training:
+            config.experiment.env_meta_update_dict = {
+                "env_kwargs": {
+                    "has_renderer": False,  # Set to False for offscreen rendering
+                    "has_offscreen_renderer": True,  # Enable offscreen rendering for observations
+                    "use_camera_obs": True,  # Enable camera observations
+                    "camera_names": ["robot0_eye_in_hand", "agentview"],  # Match training cameras
+                    "camera_heights": 84,
+                    "camera_widths": 84,
+                }
+            }
+    else:
+        config.experiment.rollout.enabled = False
 
 
 # Print config to verify
@@ -253,4 +282,4 @@ print("Training Configuration:")
 print(config)
 
 # Run training
-train(config, device="cuda" if torch.cuda.is_available() else "cpu")
+train(config, device="cuda" if torch.cuda.is_available() else "cpu", resume=args.resume)

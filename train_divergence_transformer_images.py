@@ -430,15 +430,11 @@ with config.values_unlocked():
 
         config.observation.encoder.rgb.share = False
 
-        config.observation.encoder.rgb.obs_randomizer_class = "CropColorRandomizer"
-        config.observation.encoder.rgb.obs_randomizer_kwargs = {
-            "crop_height": 76,
-            "crop_width": 76,
-            "brightness": 0.3,
-            "contrast": 0.3,
-            "saturation": 0.3,
-            "hue": 0.1,
-        }
+        config.observation.encoder.rgb.obs_randomizer_class = ["CropRandomizer", "ColorRandomizer"]
+        config.observation.encoder.rgb.obs_randomizer_kwargs = [
+            {"crop_height": 76, "crop_width": 76},
+            {"brightness": 0.3, "contrast": 0.3, "saturation": 0.3, "hue": 0.1},
+        ]
         config.observation.encoder.rgb.freeze = False
     # Enable Transformer architecture
     config.algo.rnn.enabled = False
@@ -497,8 +493,6 @@ with config.values_unlocked():
 # Print config to verify
 print("Training Configuration:")
 print(config)
-
-
 
 # Run training
 train(config, device="cuda" if torch.cuda.is_available() else "cpu", resume=args.resume)
