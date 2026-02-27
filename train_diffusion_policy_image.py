@@ -81,9 +81,18 @@ def parse_args():
         default=10,
         help="save checkpoint every N epochs"
     )
+    parser.add_argument(
+        "--end_to_end_image_training", "-E2E",
+        action="store_true",
+        help="Train image encoders end-to-end using raw RGB observations"
+    )
+
     return parser.parse_args()
 
 args = parse_args()
+
+if args.end_to_end_image_training:
+    args.use_images = False
 
 if args.dataset_portion == "full":
     portion_prefix = "F"
@@ -129,6 +138,8 @@ with config.values_unlocked():
     base_dir = args.output_dir
     if args.use_images:
         base_dir += "_images"
+    elif args.end_to_end_image_training:
+        base_dir += "_end2end_images"
     
     base_dir = os.path.join(base_dir, args.dataset)
     config.train.output_dir = base_dir
@@ -153,6 +164,30 @@ with config.values_unlocked():
     if args.use_images:
         config.observation.modalities.obs.low_dim.append("robot0_eye_in_hand_feats")
         config.observation.modalities.obs.rgb = []
+
+    elif args.end_to_end_image_training:
+        config.observation.modalities.obs.rgb = ["robot0_eye_in_hand_image", "agentview_image"]
+        config.observation.encoder.rgb.core_class = "VisualCore"
+        config.observation.encoder.rgb.core_kwargs = {
+            "backbone_class": "ResNet18Conv",
+            "pool_class": "SpatialSoftmax",
+            "feature_dimension": 512,
+            "pretrained": False,
+            "flatten": True,
+        }
+
+        config.observation.encoder.rgb.share = False
+
+        config.observation.encoder.rgb.obs_randomizer_class = "CropColorRandomizer"
+        config.observation.encoder.rgb.obs_randomizer_kwargs = {
+            "crop_height": 76,
+            "crop_width": 76,
+            "brightness": 0.3,
+            "contrast": 0.3,
+            "saturation": 0.3,
+            "hue": 0.1,
+        }
+        config.observation.encoder.rgb.freeze = False
     
     # Horizon parameters (key parameters for Diffusion Policy)
     config.algo.horizon.observation_horizon = 2  # number of observation frames to condition on

@@ -327,12 +327,21 @@ with config.values_unlocked():
             "pool_class": "SpatialSoftmax",
             "feature_dimension": 512,
             "pretrained": False,
-            "flatten": False,
+            "flatten": True,
         }
+
 
         config.observation.encoder.rgb.share = False
 
-        config.observation.encoder.rgb.obs_randomizer_class = None
+        config.observation.encoder.rgb.obs_randomizer_class = "CropColorRandomizer"
+        config.observation.encoder.rgb.obs_randomizer_kwargs = {
+            "crop_height": 76,
+            "crop_width": 76,
+            "brightness": 0.3,
+            "contrast": 0.3,
+            "saturation": 0.3,
+            "hue": 0.1,
+        }
         config.observation.encoder.rgb.freeze = False
     # Enable Transformer architecture
     config.algo.rnn.enabled = False
