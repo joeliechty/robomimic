@@ -530,11 +530,11 @@ class ResNet18Conv(ConvBase):
             net.conv1 = CoordConv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
         elif input_channel != 3:
             net.conv1 = nn.Conv2d(input_channel, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        else:
-            net.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3, bias=False) #did this to improve spatial size
+        # else:
+        #     net.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3, bias=False) #did this to improve spatial size
 
         
-        net.maxpool = nn.Identity() #did this to stop maxpool for larger spatial softmax
+        # net.maxpool = nn.Identity() #did this to stop maxpool for larger spatial softmax
 
         # cut the last fc layer
         self._input_coord_conv = input_coord_conv
