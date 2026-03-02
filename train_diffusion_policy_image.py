@@ -249,7 +249,6 @@ with config.values_unlocked():
     config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}" #_exp{exp_num}"
     
     # Validation settings (disable to keep it simple for now)
-    config.experiment.validate = False 
     if args.validate:
         config.experiment.rollout.enabled = True
         config.experiment.rollout.rate = args.save_freq
@@ -275,6 +274,13 @@ with config.values_unlocked():
             }
     else:
         config.experiment.rollout.enabled = False
+
+    # Tell the dataloader to use the 'train' split for training
+    config.train.hdf5_filter_key = "train"
+    
+    # Enable validation and tell it to use the 'valid' split
+    config.experiment.validate = True
+    config.train.hdf5_validation_filter = "valid"
 
 
 # Print config to verify
