@@ -1498,6 +1498,35 @@ def visualize_state_probability_evolution_per_axis(
     ee_state_np = ee_state_tensor.cpu().numpy()
     positions = ee_state_np[:, :, :3]  # [n_demos, n_phase_bins, 3]
 
+    # Compute rotation components (sin/cos of Euler angles from quaternions)
+    import torch
+    from tf_utils import _quat_to_rot_mat
+    quats_flat = torch.from_numpy(ee_state_np[:, :, 3:].reshape(-1, 4))
+    _rot_mats = _quat_to_rot_mat(quats_flat, w_first=False).numpy()  # [n_demos*n_phase_bins, 3, 3]
+    _roll  = np.arctan2(_rot_mats[:, 2, 1], _rot_mats[:, 2, 2]).reshape(n_demos, n_phase_bins)
+    _pitch = np.arctan2(-_rot_mats[:, 2, 0],
+                        np.sqrt(_rot_mats[:, 2, 1]**2 + _rot_mats[:, 2, 2]**2)).reshape(n_demos, n_phase_bins)
+    _yaw   = np.arctan2(_rot_mats[:, 1, 0], _rot_mats[:, 0, 0]).reshape(n_demos, n_phase_bins)
+
+    # All component values: x, y, z, sin/cos of roll/pitch/yaw
+    all_component_values = [
+        positions[:, :, 0], positions[:, :, 1], positions[:, :, 2],
+        np.sin(_roll),  np.cos(_roll),
+        np.sin(_pitch), np.cos(_pitch),
+        np.sin(_yaw),   np.cos(_yaw),
+    ]
+    component_names = [
+        'X Position', 'Y Position', 'Z Position',
+        'sin(Roll)', 'cos(Roll)', 'sin(Pitch)', 'cos(Pitch)', 'sin(Yaw)', 'cos(Yaw)',
+    ]
+    component_labels = [
+        'x (m)', 'y (m)', 'z (m)',
+        'sin(roll)', 'cos(roll)', 'sin(pitch)', 'cos(pitch)', 'sin(yaw)', 'cos(yaw)',
+    ]
+    # Rotation components have a fixed [-1, 1] domain; position ranges are data-driven
+    is_rotation_comp = [False, False, False, True, True, True, True, True, True]
+    n_components = len(all_component_values)
+
     phase_bins = np.linspace(0, 1, n_phase_bins)
 
     # Snapshot phases evenly spaced, not including 0
@@ -1505,26 +1534,26 @@ def visualize_state_probability_evolution_per_axis(
     # snapshot_phases = np.linspace(0, 1, n_snapshots + 1)[1:]  # e.g. [0.2, 0.4, 0.6, 0.8, 1.0]
     # snapshot_phases[-1] = min(snapshot_phases[-1], 0.99)
 
-    component_names = ['X Position', 'Y Position', 'Z Position']
-    component_labels = ['x (m)', 'y (m)', 'z (m)']
-
     # ── First pass: compute probability grids for all components ──────────────
     all_probability_grids = []
     all_val_bins = []
     all_val_centers = []
 
-    for comp_idx in range(3):
-        component_values = positions[:, :, comp_idx]  # [n_demos, n_phase_bins]
+    for comp_idx in range(n_components):
+        component_values = all_component_values[comp_idx]  # [n_demos, n_phase_bins]
 
-        if nan_mask is not None:
-            valid_mask = ~nan_mask.cpu().numpy()
-            valid_values = component_values[valid_mask]
+        if is_rotation_comp[comp_idx]:
+            # sin/cos are always in [-1, 1]
+            val_bins = np.linspace(-1.1, 1.1, n_density_bins)
         else:
-            valid_values = component_values[~np.isnan(component_values)]
-
-        val_min, val_max = valid_values.min(), valid_values.max()
-        val_range = val_max - val_min
-        val_bins = np.linspace(val_min - 0.05 * val_range, val_max + 0.05 * val_range, n_density_bins)
+            if nan_mask is not None:
+                valid_mask = ~nan_mask.cpu().numpy()
+                valid_values = component_values[valid_mask]
+            else:
+                valid_values = component_values[~np.isnan(component_values)]
+            val_min, val_max = valid_values.min(), valid_values.max()
+            val_range = val_max - val_min
+            val_bins = np.linspace(val_min - 0.05 * val_range, val_max + 0.05 * val_range, n_density_bins)
         val_centers = (val_bins[:-1] + val_bins[1:]) / 2
 
         all_val_bins.append(val_bins)
@@ -1550,10 +1579,10 @@ def visualize_state_probability_evolution_per_axis(
 
     global_max_prob = max(grid.max() for grid in all_probability_grids)
 
-    # ── Second pass: build one figure per axis ────────────────────────────────
+    # ── Second pass: build one figure per component ───────────────────────────
     figs = []
 
-    for comp_idx in range(3):
+    for comp_idx in range(n_components):
         val_bins = all_val_bins[comp_idx]
         val_centers = all_val_centers[comp_idx]
         probability_grid = all_probability_grids[comp_idx]
@@ -1584,10 +1613,6 @@ def visualize_state_probability_evolution_per_axis(
                         #   fontsize=11, fontweight='bold')
         ax_heat.set_xlim(val_bins[0], val_bins[-1])
         ax_heat.set_ylim(phase_bins[-1], phase_bins[0])  # phase=0 at top, phase=1 at bottom
-
-        # Mark snapshot phases as dashed horizontal lines on the heatmap
-        for sp in snapshot_phases:
-            ax_heat.axhline(y=sp, color='white', linestyle='--', alpha=0.6, linewidth=1.2)
 
         # ── Right column: 3D snapshot subplots stacked vertically ─────────────
         gs_3d = GridSpecFromSubplotSpec(n_snapshots, 1, subplot_spec=gs[0, 1], hspace=0.05)
@@ -2103,6 +2128,212 @@ def visualize_score_and_div_for_trajectories(
     
     return fig
 
+def visualize_trajectory_components(
+    ee_state_tensor,
+    score_tensor,
+    divergence_tensor,
+    selected_demo_indices,
+    demo_keys,
+    data=None,
+    nan_mask=None,
+    phase_tensor=None,
+    n_images=12,
+    image_obs_key=None,
+    demo_indices=None,
+    figsize=(24, 20),
+    title="Trajectory Components Visualization"
+):
+    """
+    Visualize trajectory components with thumbnail images of highlighted demos across the top.
+
+    The top section contains one row of evenly-spaced thumbnail images per highlighted demo.
+    Below that, nine rows show the EE pose components (x, y, z, sin/cos of roll/pitch/yaw),
+    each spanning the full figure width, followed by a final row showing the flow-field divergence.
+    All demos are drawn faded in the background; the highlighted demos are drawn on top in
+    distinct solid colors.
+
+    Args:
+        ee_state_tensor: torch.tensor [n_demos, n_bins, 7], end-effector poses (pos + quat)
+        score_tensor: torch.tensor [n_bins, 6], score values (not used for plotting, kept for API compat)
+        divergence_tensor: torch.tensor [n_demos, n_bins], divergence values for all demos
+        selected_demo_indices: list of int, indices of demos to highlight (default length 3)
+        demo_keys: list of demo keys corresponding to each trajectory
+        data: data dict returned by _load_training_data, used for image extraction (optional)
+        nan_mask: torch.tensor [n_demos, n_bins], boolean mask for NaN values (optional)
+        phase_tensor: torch.tensor [n_demos, n_bins, 1], phase values (optional)
+        n_images: int, number of evenly-spaced thumbnail images per highlighted demo (default 12)
+        image_obs_key: str, observation key for image data; auto-detected if None
+        demo_indices: list of indices to include in background (if None, uses all demos)
+        figsize: tuple, figure size (default (24, 20))
+        title: str, overall figure title
+
+    Returns:
+        fig: matplotlib figure object
+    """
+    import matplotlib.pyplot as plt
+    from tf_utils import _quat_to_rot_mat
+    import torch
+    import numpy as np
+
+    n_demos, n_bins, _ = ee_state_tensor.shape
+    if demo_indices is None:
+        demo_indices = list(range(n_demos))
+
+    n_highlighted = len(selected_demo_indices)
+    highlighted_set = set(selected_demo_indices)
+
+    # Distinct colors for the highlighted demos (first n_highlighted tab10 colors)
+    highlight_colors = [plt.cm.tab10(i / 10.0) for i in range(n_highlighted)]
+
+    # Convert to numpy for plotting
+    ee_state_np = ee_state_tensor.cpu().numpy()
+
+    # -----------------------------------------------------------------------
+    # Grid layout
+    #   Rows 0 .. n_highlighted-1  : image thumbnails (one row per highlight)
+    #   Rows n_highlighted .. +8   : trajectory component plots (span all cols)
+    # -----------------------------------------------------------------------
+    n_traj_rows = 7  # x, y, z, roll_sin, pitch_sin, yaw_sin, divergence
+    n_cols = n_images
+    n_total_rows = n_highlighted + n_traj_rows
+    height_ratios = [1.2] * n_highlighted + [1.5] * n_traj_rows
+
+    fig = plt.figure(figsize=figsize)
+    gs = fig.add_gridspec(
+        n_total_rows, n_cols,
+        hspace=0.65, wspace=0.25,
+        height_ratios=height_ratios,
+    )
+
+    # -----------------------------------------------------------------------
+    # Image rows
+    # -----------------------------------------------------------------------
+    if data is not None:
+        for row_idx, demo_idx in enumerate(selected_demo_indices):
+            demo_key = demo_keys[demo_idx]
+            color = highlight_colors[row_idx]
+            try:
+                images, _ = _get_evenly_spaced_images(
+                    data, demo_key, n_images=n_images, image_obs_key=image_obs_key
+                )
+                for col_idx in range(n_images):
+                    ax_img = fig.add_subplot(gs[row_idx, col_idx])
+                    ax_img.imshow(images[col_idx])
+                    ax_img.axis('off')
+                    # Colored border matching the highlight color
+                    for spine in ax_img.spines.values():
+                        spine.set_visible(True)
+                        spine.set_edgecolor(color)
+                        spine.set_linewidth(2.5)
+                    if col_idx == 0:
+                        ax_img.set_title(demo_key, fontsize=8, color=color, fontweight='bold', pad=3)
+            except Exception as e:
+                ax_blank = fig.add_subplot(gs[row_idx, :])
+                ax_blank.text(
+                    0.5, 0.5,
+                    f'{demo_key}: images unavailable ({e})',
+                    ha='center', va='center', transform=ax_blank.transAxes, fontsize=9
+                )
+                ax_blank.axis('off')
+
+    # -----------------------------------------------------------------------
+    # Trajectory component axes (each spans all columns)
+    # -----------------------------------------------------------------------
+    r = n_highlighted  # first trajectory row index
+    ax_x         = fig.add_subplot(gs[r + 0, :])
+    ax_y         = fig.add_subplot(gs[r + 1, :])
+    ax_z         = fig.add_subplot(gs[r + 2, :])
+    ax_roll_sin  = fig.add_subplot(gs[r + 3, :])
+    ax_pitch_sin = fig.add_subplot(gs[r + 4, :])
+    ax_yaw_sin   = fig.add_subplot(gs[r + 5, :])
+    ax_divergence = fig.add_subplot(gs[r + 6, :])
+
+    divergence_np = divergence_tensor.cpu().numpy()  # [n_demos, n_bins]
+
+    # -----------------------------------------------------------------------
+    # Helper: extract and plot one demo onto all ten trajectory axes
+    # -----------------------------------------------------------------------
+    def _plot_demo(demo_idx, color, alpha, linewidth, zorder, label=None):
+        traj = ee_state_np[demo_idx]
+        if nan_mask is not None:
+            valid_mask = ~nan_mask[demo_idx].cpu().numpy()
+        else:
+            valid_mask = ~np.isnan(traj).any(axis=1)
+        valid_indices = np.where(valid_mask)[0]
+        if len(valid_indices) == 0:
+            return
+
+        positions  = traj[valid_indices, :3]
+        quaternions = traj[valid_indices, 3:]
+        rot_mats = _quat_to_rot_mat(torch.from_numpy(quaternions), w_first=False).numpy()
+
+        roll  = np.arctan2(rot_mats[:, 2, 1], rot_mats[:, 2, 2])
+        pitch = np.arctan2(-rot_mats[:, 2, 0],
+                           np.sqrt(rot_mats[:, 2, 1]**2 + rot_mats[:, 2, 2]**2))
+        yaw   = np.arctan2(rot_mats[:, 1, 0], rot_mats[:, 0, 0])
+
+        if phase_tensor is not None:
+            t = phase_tensor[demo_idx, valid_indices, 0].cpu().numpy()
+        else:
+            t = valid_indices
+
+        kw = dict(color=color, alpha=alpha, linewidth=linewidth, zorder=zorder)
+        ax_x.plot(t, positions[:, 0], **kw)
+        ax_y.plot(t, positions[:, 1], **kw)
+        ax_z.plot(t, positions[:, 2], **kw)
+        ax_roll_sin.plot(t, np.sin(roll),   **kw)
+        ax_pitch_sin.plot(t, np.sin(pitch), **kw)
+        ax_yaw_sin.plot(t, np.sin(yaw),     **kw)
+        ax_divergence.plot(t, divergence_np[demo_idx, valid_indices], **kw)
+
+        if label is not None:
+            ax_x.plot([], [], color=color, linewidth=linewidth, label=label)
+
+    # Background: all non-highlighted demos
+    bg_alpha = 0.12 if len(demo_indices) > 20 else 0.25
+    for demo_idx in demo_indices:
+        if demo_idx in highlighted_set:
+            continue
+        _plot_demo(demo_idx, color='steelblue', alpha=bg_alpha, linewidth=0.8, zorder=1)
+
+    # Foreground: highlighted demos on top in distinct colors
+    for h_idx, demo_idx in enumerate(selected_demo_indices):
+        _plot_demo(
+            demo_idx,
+            color=highlight_colors[h_idx],
+            alpha=1.0,
+            linewidth=2.5,
+            zorder=100 + h_idx,
+            label=demo_keys[demo_idx],
+        )
+
+    # ax_x.legend(loc='upper right', fontsize=8)
+
+    # -----------------------------------------------------------------------
+    # Axis labels and titles
+    # -----------------------------------------------------------------------
+    xlabel = 'Phase' if phase_tensor is not None else 'Time Step'
+
+    ax_x.set_ylabel('X (m)');          ax_x.set_title('Translation X',  fontsize=10, fontweight='bold'); ax_x.grid(True, alpha=0.3)
+    ax_y.set_ylabel('Y (m)');          ax_y.set_title('Translation Y',  fontsize=10, fontweight='bold'); ax_y.grid(True, alpha=0.3)
+    ax_z.set_ylabel('Z (m)');          ax_z.set_title('Translation Z',  fontsize=10, fontweight='bold'); ax_z.grid(True, alpha=0.3)
+
+    ax_roll_sin.set_ylabel('sin(Roll)');   ax_roll_sin.set_title('Roll',  fontsize=10, fontweight='bold'); ax_roll_sin.grid(True, alpha=0.3);  ax_roll_sin.set_ylim([-1.1, 1.1])
+    ax_pitch_sin.set_ylabel('sin(Pitch)'); ax_pitch_sin.set_title('Pitch', fontsize=10, fontweight='bold'); ax_pitch_sin.grid(True, alpha=0.3); ax_pitch_sin.set_ylim([-1.1, 1.1])
+    ax_yaw_sin.set_ylabel('sin(Yaw)');     ax_yaw_sin.set_title('Yaw',    fontsize=10, fontweight='bold'); ax_yaw_sin.grid(True, alpha=0.3);   ax_yaw_sin.set_ylim([-1.1, 1.1])
+
+    ax_divergence.set_ylabel('Divergence'); ax_divergence.set_title('Flow Field Divergence', fontsize=10, fontweight='bold'); ax_divergence.grid(True, alpha=0.3)
+    ax_divergence.set_xlabel(xlabel)
+
+    fig.suptitle(title, fontsize=14, fontweight='bold', y=0.995)
+
+    try:
+        plt.tight_layout(rect=[0, 0, 1, 0.99])
+    except Exception:
+        pass
+
+    return fig
+
 def _get_evenly_spaced_images(data, demo_key, n_images=12, image_obs_key=None):
     """
     Grabs n_images evenly spaced images from the specified demo.
@@ -2297,22 +2528,22 @@ def test_and_visualize(args):
     print(f"  PDF: {fig_prob_path_pdf}")
     plt.show()
 
-    # Visualize per-axis probability evolution (heatmap + 3D phase snapshots)
-    print(f"\n1.4. Visualizing per-axis state probability evolution (heatmap + 3D snapshots):")
-    axis_names = ['x', 'y', 'z']
+    # Visualize per-component probability evolution (heatmap + 3D phase snapshots)
+    print(f"\n1.4. Visualizing per-component state probability evolution (heatmap + 3D snapshots):")
+    component_names_short = ['x', 'y', 'z', 'sin_roll', 'cos_roll', 'sin_pitch', 'cos_pitch', 'sin_yaw', 'cos_yaw']
     figs_per_axis = visualize_state_probability_evolution_per_axis(
         ee_state_tensor, demo_tensor_keys, nan_mask,
         phase_tensor=phase_tensor,
         n_density_bins=50,
         n_snapshots=4,
     )
-    for axis_idx, fig_axis in enumerate(figs_per_axis):
-        axis_name = axis_names[axis_idx]
-        fig_axis_path_png = os.path.join(dataset_dir, f"state_probability_evolution_{axis_name}_axis.png")
-        fig_axis_path_pdf = os.path.join(dataset_dir, f"state_probability_evolution_{axis_name}_axis.pdf")
+    for comp_idx, fig_axis in enumerate(figs_per_axis):
+        comp_name = component_names_short[comp_idx]
+        fig_axis_path_png = os.path.join(dataset_dir, f"state_probability_evolution_{comp_name}.png")
+        fig_axis_path_pdf = os.path.join(dataset_dir, f"state_probability_evolution_{comp_name}.pdf")
         fig_axis.savefig(fig_axis_path_png, dpi=150, bbox_inches='tight')
         fig_axis.savefig(fig_axis_path_pdf, bbox_inches='tight')
-        print(f"  Saved {axis_name}-axis figure:")
+        print(f"  Saved {comp_name} figure:")
         print(f"    PNG: {fig_axis_path_png}")
         print(f"    PDF: {fig_axis_path_pdf}")
         plt.show()
@@ -2340,6 +2571,41 @@ def test_and_visualize(args):
         fig_path = os.path.join(dataset_dir, f"score_div_visualization_{demo_key}.png")
         fig.savefig(fig_path, dpi=150, bbox_inches='tight')
         print(f"  Saved visualization for demo {demo_key} to: {fig_path}")
+        plt.show()
+
+    # Visualize trajectory components with image thumbnails for 3 highlighted demos
+    print(f"\n2.1.2. Visualizing trajectory components with image thumbnails:")
+    highlight_indices = [0, 1, 2]
+    fig_traj = visualize_trajectory_components(
+        ee_state_tensor, score_ee[0], div_ee,
+        selected_demo_indices=highlight_indices,
+        demo_keys=demo_tensor_keys,
+        data=data,
+        nan_mask=nan_mask,
+        phase_tensor=phase_tensor,
+        n_images=6,
+        title="Trajectory Components – highlighted: demos 0, 1, 2"
+    )
+    fig_traj_path = os.path.join(dataset_dir, "trajectory_components_visualization.png")
+    fig_traj.savefig(fig_traj_path, dpi=150, bbox_inches='tight')
+    print(f"  Saved trajectory components visualization to: {fig_traj_path}")
+    plt.show()
+
+    for demo_idx in range(3):
+        demo_key = demo_tensor_keys[demo_idx]
+        images, img_indices = _get_evenly_spaced_images(data, demo_key, n_images=6)
+        print(f"   Image obs key auto-detected, images shape: {images.shape}")
+        print(f"   Selected timestep indices: {img_indices}")
+        fig_imgs, axes = plt.subplots(1, 6, figsize=(18, 3))
+        fig_imgs.suptitle(f"6 Evenly Spaced Images from '{demo_key}'", fontsize=14, fontweight='bold')
+        for ax, img, idx in zip(axes.flat, images, img_indices):
+            ax.imshow(img)
+            ax.set_title(f"t={idx}", fontsize=9)
+            ax.axis('off')
+        plt.tight_layout()
+        fig_imgs_path = os.path.join(dataset_dir, f"{demo_key}_evenly_spaced_images.png")
+        fig_imgs.savefig(fig_imgs_path, dpi=150, bbox_inches='tight')
+        print(f"   Saved to: {fig_imgs_path}")
         plt.show()
 
     print(f"\n2.2. Unbinning divergence and score data:")
