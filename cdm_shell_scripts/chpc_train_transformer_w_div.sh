@@ -30,10 +30,10 @@ if [ -z "$CDM_LOSS_WEIGHT" ]; then
   CDM_LOSS_WEIGHT=0.001
 fi
 
-if [ -z "$COSINE_REG_SCHEDULE" ]; then
-  COSINE_REG_ARG=""
-else
+if [ "$COSINE_REG_SCHEDULE" = "True" ]; then
   COSINE_REG_ARG="-CRS"
+else
+  COSINE_REG_ARG=""
 fi
 
 # Define your Apptainer image path on scratch
