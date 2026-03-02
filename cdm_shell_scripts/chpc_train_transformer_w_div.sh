@@ -32,7 +32,7 @@ IMAGE_PATH="/scratch/general/vast/$USER/robomimic.sif"
 # Load Apptainer module
 module load apptainer
 
-echo "Launching Transformer CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
+echo "Launching Transformer CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}, CDM loss weight: ${CDM_LOSS_WEIGHT}, batch size: ${BATCH_SIZE}..."
 echo "Start time: $(date)"
 
 # Launch Transformer WITH Divergence (-CDM flag)
