@@ -122,18 +122,6 @@ if args.dataset in ["lift", "can", "square"]:
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
 
-# if args.dataset == "lift":
-#     target = f"/app/robomimic/datasets/lift/lift_feats{dataset_suffix}_w_cdm.hdf5"
-#     source = f"/app/robomimic/datasets/lift/lift_demo.hdf5"
-# elif args.dataset == "can":
-#     target = f"/app/robomimic/datasets/can/can_feats{dataset_suffix}_w_cdm.hdf5"
-#     source = f"/app/robomimic/datasets/can/can_demo.hdf5"
-# elif args.dataset == "square":
-#     target = f"/app/robomimic/datasets/square/square_feats{dataset_suffix}_w_cdm.hdf5"
-#     source = f"/app/robomimic/datasets/square/square_demo.hdf5"
-# else:
-#     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
-
 if os.path.exists(source) and os.path.exists(target):
     sync_all_attributes(source, target)
 else:
@@ -280,7 +268,7 @@ with config.values_unlocked():
     
     # Enable validation and tell it to use the 'valid' split
     config.experiment.validate = True
-    config.train.hdf5_validation_filter = "valid"
+    config.train.hdf5_validation_filter_key = "valid"
 
 
 # Print config to verify
