@@ -210,6 +210,8 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
 
         ax.set_title(metric_name)
         ax.set_xlabel("Epoch")
+        if metric_name != "Success Rate":
+            ax.set_yscale("log")
         ax.grid(True, alpha=0.3)
 
     # Single shared legend below all subplots
