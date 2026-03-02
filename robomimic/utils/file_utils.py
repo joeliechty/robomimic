@@ -55,7 +55,12 @@ def create_hdf5_filter_key(hdf5_path, demo_keys, key_name):
     for ep in demos:
         ep_data_grp = f["data/{}".format(ep)]
         if ep in demo_keys:
-            ep_lengths.append(ep_data_grp.attrs["num_samples"])
+            if "num_samples" in ep_data_grp.attrs:
+                ep_lengths.append(ep_data_grp.attrs["num_samples"])
+            else:
+                # fall back to counting timesteps from the actual data
+                first_key = next(iter(ep_data_grp.keys()))
+                ep_lengths.append(len(ep_data_grp[first_key]))
 
     # store list of filtered keys under mask group
     k = "mask/{}".format(key_name)

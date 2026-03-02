@@ -21,9 +21,19 @@ EPOCHS=$4
 SAVE_FREQ=$5
 BATCH_SIZE=$6
 CDM_LOSS_WEIGHT=$7
+PATIENCE=$8
+DECAY_FACTOR=$9
+COSINE_REG_SCHEDULE=${10:-False}
+
 
 if [ -z "$CDM_LOSS_WEIGHT" ]; then
   CDM_LOSS_WEIGHT=0.001
+fi
+
+if [ -z "$COSINE_REG_SCHEDULE" ]; then
+  COSINE_REG_ARG=""
+else
+  COSINE_REG_ARG="-CRS"
 fi
 
 # Define your Apptainer image path on scratch
@@ -32,7 +42,7 @@ IMAGE_PATH="/scratch/general/vast/$USER/robomimic.sif"
 # Load Apptainer module
 module load apptainer
 
-echo "Launching Transformer CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}, CDM loss weight: ${CDM_LOSS_WEIGHT}, batch size: ${BATCH_SIZE}..."
+echo "Launching Transformer CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}, CDM loss weight: ${CDM_LOSS_WEIGHT}, batch size: ${BATCH_SIZE}, patience: ${PATIENCE}, decay factor: ${DECAY_FACTOR}"
 echo "Start time: $(date)"
 
 # Launch Transformer WITH Divergence (-CDM flag)
@@ -41,6 +51,6 @@ apptainer exec \
   --bind $(pwd):/app/robomimic \
   --pwd /app/robomimic \
   $IMAGE_PATH \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -CDM -L ${CDM_LOSS_WEIGHT} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V"
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -CDM -L ${CDM_LOSS_WEIGHT} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V --cdm_patience ${PATIENCE} --cdm_decay_factor ${DECAY_FACTOR} ${COSINE_REG_ARG}"
 
 echo "Job finished for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
