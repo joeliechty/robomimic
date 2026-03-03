@@ -125,10 +125,17 @@ def discover_runs(results_root: pathlib.Path) -> list[RunInfo]:
                 continue
             task = task_dir.name
 
+            # Per-task filter for config directory names
+            TASK_FILTERS = {
+                "can": "3000_50",
+                "lift": "500_10",
+            }
+            task_filter = TASK_FILTERS.get(task)
+
             for config_dir in sorted(task_dir.iterdir()):
                 if not config_dir.is_dir():
                     continue
-                if "3000" not in config_dir.name:
+                if task_filter is None or task_filter not in config_dir.name:
                     continue
 
                 # Pick the most recent timestamped sub-directory
@@ -246,7 +253,7 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
 def main():
     print(f"Scanning: {RESULTS_ROOT}")
     runs = discover_runs(RESULTS_ROOT)
-    print(f"Found {len(runs)} runs with '3000' in config name.\n")
+    print(f"Found {len(runs)} runs matching task-specific config filters.\n")
 
     # Parse all logs
     parsed: list[tuple[RunInfo, dict]] = []
