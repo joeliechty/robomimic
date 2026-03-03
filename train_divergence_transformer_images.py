@@ -479,11 +479,19 @@ with config.values_unlocked():
     config.algo.rnn.enabled = False
     config.algo.transformer.enabled = True
     
-    # Transformer architecture settings
-    config.algo.transformer.context_length = 10  # Number of timesteps to condition on
-    config.algo.transformer.embed_dim = 512
-    config.algo.transformer.num_layers = 6
-    config.algo.transformer.num_heads = 8
+    # Transformer architecture settings — use a smaller model for lift to reduce overfitting
+    if args.dataset == "lift":
+        context_length = 2
+        config.algo.transformer.context_length = context_length
+        config.algo.transformer.embed_dim = 128
+        config.algo.transformer.num_layers = 3
+        config.algo.transformer.num_heads = 4
+    else:
+        context_length = 10
+        config.algo.transformer.context_length = context_length
+        config.algo.transformer.embed_dim = 512
+        config.algo.transformer.num_layers = 6
+        config.algo.transformer.num_heads = 8
     config.algo.transformer.supervise_all_steps = False  # Only supervise last token
     
     # NEW: Set divergence loss weight
@@ -492,7 +500,7 @@ with config.values_unlocked():
     # Training settings
     config.train.batch_size = args.batch_size
     config.train.num_epochs = args.epochs
-    config.train.seq_length = 10  # Must match transformer.context_length
+    config.train.seq_length = context_length  # Must match transformer.context_length
     config.train.cuda = torch.cuda.is_available()
     
     # Save checkpoints
