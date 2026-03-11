@@ -24,6 +24,8 @@ CDM_LOSS_WEIGHT=$7
 PATIENCE=$8
 DECAY_FACTOR=$9
 COSINE_REG_SCHEDULE=${10:-False}
+RESUME=${11:-False}
+SEED=${12:-}
 
 
 if [ -z "$CDM_LOSS_WEIGHT" ]; then
@@ -34,6 +36,17 @@ if [ "$COSINE_REG_SCHEDULE" = "True" ]; then
   COSINE_REG_ARG="-CRS"
 else
   COSINE_REG_ARG=""
+fi
+
+if [ "$RESUME" = "True" ]; then
+  RESUME_FLAG="--resume"
+else
+  RESUME_FLAG=""
+fi
+
+SEED_ARG=""
+if [ -n "$SEED" ]; then
+  SEED_ARG="--seed ${SEED}"
 fi
 
 # Define your Apptainer image path on scratch
@@ -51,6 +64,6 @@ apptainer exec \
   --bind $(pwd):/app/robomimic \
   --pwd /app/robomimic \
   $IMAGE_PATH \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -CDM -L ${CDM_LOSS_WEIGHT} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V --cdm_patience ${PATIENCE} --cdm_decay_factor ${DECAY_FACTOR} ${COSINE_REG_ARG}"
+  /bin/bash -c "export NUMBA_CACHE_DIR=/tmp && export PYTHONUSERBASE=/scratch/general/vast/$USER/.local && source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install --user -e . && python train_divergence_transformer_images.py -D ${DATASET} -CDM -L ${CDM_LOSS_WEIGHT} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V --cdm_patience ${PATIENCE} --cdm_decay_factor ${DECAY_FACTOR} ${COSINE_REG_ARG} ${SEED_ARG} ${RESUME_FLAG}"
 
 echo "Job finished for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"

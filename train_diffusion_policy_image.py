@@ -96,6 +96,12 @@ def parse_args():
         action='store_true',
         help="set this flag to resume training from latest checkpoint"
     )
+    parser.add_argument(
+        "--seed", "-S",
+        type=int,
+        default=None,
+        help="random seed for reproducibility (omit to leave unseeded)"
+    )
     return parser.parse_args()
 
 args = parse_args()
@@ -233,8 +239,13 @@ with config.values_unlocked():
     config.experiment.save.enabled = True
     config.experiment.save.every_n_epochs = args.save_freq
 
+    # Set random seed
+    if args.seed is not None:
+        config.train.seed = args.seed
+
     # Set experiment name with dataset portion, epochs, and save frequency
-    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}" #_exp{exp_num}"
+    seed_suffix = f"_seed{args.seed}" if args.seed is not None else ""
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}{seed_suffix}" #_exp{exp_num}"
     
     # Validation settings (disable to keep it simple for now)
     if args.validate:

@@ -18,6 +18,13 @@ PORTION=$2
 PORTION_ID=$3
 EPOCHS=$4
 SAVE_FREQ=$5
+RESUME=$6
+
+if [ "$RESUME" = "True" ]; then
+  RESUME_FLAG="--resume"
+else
+  RESUME_FLAG=""
+fi
 
 # Launch Transformer Baseline (No Divergence)
 docker run -d \
@@ -27,6 +34,6 @@ docker run -d \
   -v $(pwd):/app/robomimic \
   -w /app/robomimic \
   robomimic \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E"
+  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E ${RESUME_FLAG}"
 
 echo "Launched transformer baseline job for ${DATASET} with ID: ${JOB_ID}"
