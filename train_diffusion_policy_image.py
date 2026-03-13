@@ -37,7 +37,7 @@ def parse_args():
         "--dataset", "-D",
         type=str,
         default="lift",
-        help="dataset name: 'lift', 'can', or 'square'"
+        help="dataset name: 'lift', 'can', 'square', or 'tool'"
     )
     parser.add_argument(
         "--epochs", "-E",
@@ -122,11 +122,11 @@ else:
     portion_prefix = "F"
     dataset_suffix = ""
 
-if args.dataset in ["lift", "can", "square"]:
+if args.dataset in ["lift", "can", "square", "tool"]:
     target = f"datasets/{args.dataset}/{args.dataset}_feats{dataset_suffix}_w_cdm.hdf5"
     source = f"datasets/{args.dataset}/{args.dataset}_demo.hdf5"
 else:
-    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
+    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', 'square', or 'tool'.")
 
 if os.path.exists(source) and os.path.exists(target):
     sync_all_attributes(source, target)

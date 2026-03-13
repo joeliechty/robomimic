@@ -134,7 +134,7 @@ def parse_args():
         help="cosine scheduler instead of decay on plateau schecduler for reg weight decay"
     )
     parser.add_argument(
-        "--cosine_decay_epochs",
+        "--cosine_decay_end",
         type=int,
         default=0,
         help="number of epochs over which to decay the CDM weight (defaults to --epochs if 0)"
@@ -277,7 +277,7 @@ if args.use_divergence_loss:
         import math
         _cosine_initial_weight = args.div_loss_weight
         _cosine_min_weight = args.min_cdm_weight
-        _cosine_total_epochs = args.cosine_decay_epochs if args.cosine_decay_epochs > 0 else args.epochs
+        _cosine_total_epochs = args.cosine_decay_end if args.cosine_decay_end > 0 else args.epochs
 
         _original_on_epoch_end_cos = getattr(bc.BC_Transformer, "on_epoch_end", None)
 
@@ -382,11 +382,11 @@ else:
     dataset_suffix = ""
 
 
-if args.dataset in ["lift", "can", "square"]:
+if args.dataset in ["lift", "can", "square", "tool"]:
     target = f"datasets/{args.dataset}/{args.dataset}_feats{dataset_suffix}_w_cdm.hdf5"
     source = f"datasets/{args.dataset}/{args.dataset}_demo.hdf5"
 else:
-    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
+    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', 'square', or 'tool'.")
 
 if os.path.exists(source) and os.path.exists(target):
     sync_all_attributes(source, target)
