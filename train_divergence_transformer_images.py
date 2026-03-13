@@ -133,6 +133,18 @@ def parse_args():
         action='store_true',
         help="cosine scheduler instead of decay on plateau schecduler for reg weight decay"
     )
+    parser.add_argument(
+        "--cosine_decay_end",
+        type=int,
+        default=0,
+        help="number of epochs over which to decay the CDM weight (defaults to --epochs if 0)"
+    )
+    parser.add_argument(
+        "--seed", "-S",
+        type=int,
+        default=None,
+        help="random seed for reproducibility (omit to leave unseeded)"
+    )
     return parser.parse_args()
 
 # --- Monkey-patch for observation history buffering during rollout ---
@@ -265,7 +277,7 @@ if args.use_divergence_loss:
         import math
         _cosine_initial_weight = args.div_loss_weight
         _cosine_min_weight = args.min_cdm_weight
-        _cosine_total_epochs = args.epochs
+        _cosine_total_epochs = args.cosine_decay_end if args.cosine_decay_end > 0 else args.epochs
 
         _original_on_epoch_end_cos = getattr(bc.BC_Transformer, "on_epoch_end", None)
 
@@ -370,11 +382,11 @@ else:
     dataset_suffix = ""
 
 
-if args.dataset in ["lift", "can", "square"]:
+if args.dataset in ["lift", "can", "square", "tool"]:
     target = f"datasets/{args.dataset}/{args.dataset}_feats{dataset_suffix}_w_cdm.hdf5"
     source = f"datasets/{args.dataset}/{args.dataset}_demo.hdf5"
 else:
-    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', or 'square'.")
+    raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', 'square', or 'tool'.")
 
 if os.path.exists(source) and os.path.exists(target):
     sync_all_attributes(source, target)
@@ -487,7 +499,7 @@ with config.values_unlocked():
         config.algo.transformer.num_layers = 3
         config.algo.transformer.num_heads = 4
     else:
-        context_length = 10
+        context_length = 3
         config.algo.transformer.context_length = context_length
         config.algo.transformer.embed_dim = 512
         config.algo.transformer.num_layers = 6
@@ -512,7 +524,12 @@ with config.values_unlocked():
         decay_type = f"cosine_max{cdm_weight}_min{args.min_cdm_weight}"
     else:
         decay_type = f"plateau_max{cdm_weight}_min{args.min_cdm_weight}_pat{args.cdm_patience}_decay{args.cdm_decay_factor}"
-    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}_{decay_type}" #_exp{exp_num}"
+    # Set random seed
+    if args.seed is not None:
+        config.train.seed = args.seed
+
+    seed_suffix = f"_seed{args.seed}" if args.seed is not None else ""
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}_{decay_type}{seed_suffix}" #_exp{exp_num}"
     
     # Rollout settings
     if args.validate:

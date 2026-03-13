@@ -20,6 +20,19 @@ PORTION_ID=$3
 EPOCHS=$4
 SAVE_FREQ=$5
 BATCH_SIZE=$6
+RESUME=${7:-False}
+SEED=${8:-}
+
+if [ "$RESUME" = "True" ]; then
+  RESUME_FLAG="--resume"
+else
+  RESUME_FLAG=""
+fi
+
+SEED_ARG=""
+if [ -n "$SEED" ]; then
+  SEED_ARG="--seed ${SEED}"
+fi
 
 # Define your Apptainer image path on scratch
 IMAGE_PATH="/scratch/general/vast/$USER/robomimic.sif"
@@ -30,12 +43,12 @@ module load apptainer
 echo "Launching Diffusion Policy job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
 echo "Start time: $(date)"
 
-# Launch Transformer WITH Divergence (-CDM flag)
+# Launch Diffusion Policy training
 apptainer exec \
   --nv \
   --bind $(pwd):/app/robomimic \
   --pwd /app/robomimic \
   $IMAGE_PATH \
-  /bin/bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install -e . && python train_diffusion_policy_image.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V"
+  /bin/bash -c "export NUMBA_CACHE_DIR=/tmp && export PYTHONUSERBASE=/scratch/general/vast/$USER/.local && source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install --user -e . && python train_diffusion_policy_image.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V ${RESUME_FLAG} ${SEED_ARG}"
 
 echo "Job finished for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
