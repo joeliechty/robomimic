@@ -153,9 +153,10 @@ def discover_runs(results_root: pathlib.Path) -> list[RunInfo]:
 
             # Per-task filter for config directory names
             TASK_FILTERS = {
-                "can": ["3000_50", "1000_50"],
+                "can": ["3000_50", "1500_50"],
                 "lift": ["50_1"],
-                "square": ["4000_100"]
+                "square": ["4000_100"],
+                "tool": ["4000_100"],
             }
             task_filter = TASK_FILTERS.get(task)
 

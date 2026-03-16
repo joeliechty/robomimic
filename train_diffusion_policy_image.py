@@ -252,7 +252,10 @@ with config.values_unlocked():
         config.experiment.rollout.enabled = True
         config.experiment.rollout.rate = args.save_freq
         config.experiment.rollout.n = 50  # number of rollouts per evaluation
-        config.experiment.rollout.horizon = 400  # max steps per rollout
+        if args.dataset == "tool":
+            config.experiment.rollout.horizon = 800  # tool task is longer, so use longer horizon
+        else:
+            config.experiment.rollout.horizon = 400  # max steps per rollout
         
         # Enable rendering for both video and observations
         config.experiment.render = True
