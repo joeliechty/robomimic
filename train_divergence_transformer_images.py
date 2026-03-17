@@ -29,6 +29,7 @@ def sync_all_attributes(source_path, target_path):
         
         print(f"  [OK] Attributes for {len(demos)} demos synced.")
 
+
 # Update these paths to your actual local file locations
 # source = "/app/robomimic/dataset/can/can_demo.hdf5"
 # target = "/app/robomimic/dataset/can/can_feats_w_cdm.hdf5"
