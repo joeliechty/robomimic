@@ -1,7 +1,7 @@
 """
 Implementation of Behavioral Cloning (BC).
 """
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 import torch
 import torch.nn as nn
@@ -73,7 +73,12 @@ def algo_config_to_class(algo_config):
         if rnn_enabled:
             algo_class, algo_kwargs = BC_RNN, {}
         elif transformer_enabled:
-            algo_class, algo_kwargs = BC_Transformer, {}
+            # Check for action chunking
+            action_chunk_size = algo_config.transformer.get("action_chunk_size", 1)
+            if action_chunk_size > 1:
+                algo_class, algo_kwargs = BC_Transformer_Chunking, {}
+            else:
+                algo_class, algo_kwargs = BC_Transformer, {}
         else:
             algo_class, algo_kwargs = BC, {}
 
@@ -996,7 +1001,142 @@ class BC_Transformer_GMM(BC_Transformer):
         """
         log = PolicyAlgo.log_info(self, info)
         log["Loss"] = info["losses"]["action_loss"].item()
-        log["Log_Likelihood"] = info["losses"]["log_probs"].item() 
+        log["Log_Likelihood"] = info["losses"]["log_probs"].item()
         if "policy_grad_norms" in info:
             log["Policy_Grad_Norms"] = info["policy_grad_norms"]
         return log
+
+
+class BC_Transformer_Chunking(BC_Transformer):
+    """
+    BC training with Transformer policy that outputs action chunks.
+    Predicts multiple future actions per timestep and supervises each action in the chunk.
+    """
+    def _create_networks(self):
+        """
+        Creates networks and places them into @self.nets.
+        """
+        assert self.algo_config.transformer.enabled
+
+        self.nets = nn.ModuleDict()
+        self.nets["policy"] = PolicyNets.TransformerChunkingActorNetwork(
+            obs_shapes=self.obs_shapes,
+            goal_shapes=self.goal_shapes,
+            ac_dim=self.ac_dim,
+            action_chunk_size=self.algo_config.transformer.action_chunk_size,
+            encoder_kwargs=ObsUtils.obs_encoder_kwargs_from_config(self.obs_config.encoder),
+            **BaseNets.transformer_args_from_config(self.algo_config.transformer),
+        )
+        self._set_params_from_config()
+        self.nets = self.nets.float().to(self.device)
+
+    def _set_params_from_config(self):
+        """
+        Read specific config variables we need for training / eval.
+        """
+        super()._set_params_from_config()
+        self.action_chunk_size = self.algo_config.transformer.action_chunk_size
+        self.action_queue = deque(maxlen=self.action_chunk_size)
+
+    def process_batch_for_training(self, batch):
+        """
+        Processes input batch to prepare action chunks for supervision.
+        For each observation at time t, we supervise against actions [t, t+1, ..., t+chunk_size-1].
+        """
+        input_batch = dict()
+        h = self.context_length
+        chunk_size = self.action_chunk_size
+
+        # Observations: [B, context_length, obs_dim]
+        input_batch["obs"] = {k: batch["obs"][k][:, :h, :] for k in batch["obs"]}
+        input_batch["goal_obs"] = batch.get("goal_obs", None)
+
+        # Actions: need h + chunk_size - 1 total timesteps from batch
+        # For each timestep t in [0, h-1], supervise actions [t, t+1, ..., t+chunk_size-1]
+        # Create action targets of shape [B, h, chunk_size, ac_dim]
+        B = batch["actions"].shape[0]
+        ac_dim = batch["actions"].shape[-1]
+
+        # Stack actions into chunks
+        action_chunks = []
+        for t in range(h):
+            # Actions from t to t+chunk_size
+            chunk = batch["actions"][:, t:t+chunk_size, :]  # [B, chunk_size, ac_dim]
+            action_chunks.append(chunk)
+
+        # Stack: [B, h, chunk_size, ac_dim]
+        input_batch["actions"] = torch.stack(action_chunks, dim=1)
+
+        input_batch = TensorUtils.to_device(TensorUtils.to_float(input_batch), self.device)
+        return input_batch
+
+    def _forward_training(self, batch, epoch=None):
+        """
+        Forward pass for training. Network outputs [B, T, chunk_size, ac_dim].
+        """
+        TensorUtils.assert_size_at_dim(
+            batch["obs"],
+            size=(self.context_length),
+            dim=1,
+            msg="Error: expect temporal dimension of obs batch to match transformer context length {}".format(self.context_length),
+        )
+
+        predictions = OrderedDict()
+        # Network output: [B, T, chunk_size, ac_dim]
+        predictions["actions"] = self.nets["policy"](obs_dict=batch["obs"], actions=None, goal_dict=batch["goal_obs"])
+        return predictions
+
+    def _compute_losses(self, predictions, batch):
+        """
+        Compute losses for action chunking.
+        predictions["actions"]: [B, T, chunk_size, ac_dim]
+        batch["actions"]: [B, T, chunk_size, ac_dim]
+        """
+        losses = OrderedDict()
+        a_target = batch["actions"]
+        actions = predictions["actions"]
+
+        # Compute losses across all dimensions (batch, time, chunk, action)
+        losses["l2_loss"] = nn.MSELoss()(actions, a_target)
+        losses["l1_loss"] = nn.SmoothL1Loss()(actions, a_target)
+        # Cosine loss on position components (first 3 dims of action)
+        losses["cos_loss"] = LossUtils.cosine_loss(actions[..., :3], a_target[..., :3])
+
+        action_losses = [
+            self.algo_config.loss.l2_weight * losses["l2_loss"],
+            self.algo_config.loss.l1_weight * losses["l1_loss"],
+            self.algo_config.loss.cos_weight * losses["cos_loss"],
+        ]
+        action_loss = sum(action_losses)
+        losses["action_loss"] = action_loss
+
+        return losses
+
+    def reset(self):
+        """
+        Reset the action queue at the start of a new rollout.
+        """
+        self.action_queue = deque(maxlen=self.action_chunk_size)
+
+    def get_action(self, obs_dict, goal_dict=None):
+        """
+        Get policy action using action queue.
+        When queue is empty, run inference and fill with chunk_size actions.
+        Pop and return one action at a time.
+        """
+        assert not self.nets.training
+
+        if len(self.action_queue) == 0:
+            # Run inference to get action chunk
+            output = self.nets["policy"](obs_dict, actions=None, goal_dict=goal_dict)
+            # output shape: [1, T, chunk_size, ac_dim]
+            # Take the last timestep's chunk
+            action_chunk = output[:, -1, :, :]  # [1, chunk_size, ac_dim]
+
+            # Add all actions from chunk to queue
+            for i in range(self.action_chunk_size):
+                self.action_queue.append(action_chunk[:, i, :])  # Each is [1, ac_dim]
+
+        # Pop and return the next action
+        action = self.action_queue.popleft()  # [1, ac_dim]
+        return action

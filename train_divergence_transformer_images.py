@@ -146,6 +146,12 @@ def parse_args():
         default=None,
         help="random seed for reproducibility (omit to leave unseeded)"
     )
+    parser.add_argument(
+        "--action_chunk_size", "-ACS",
+        type=int,
+        default=1,
+        help="number of future actions to predict per timestep (1 = no chunking)"
+    )
     return parser.parse_args()
 
 # --- Monkey-patch for observation history buffering during rollout ---
@@ -208,6 +214,86 @@ def reset_with_history(self):
 bc.BC_Transformer.get_action = get_action_with_history
 bc.BC_Transformer.reset = reset_with_history
 print("Applied BC_Transformer monkey-patch for observation history buffering during rollout")
+
+# --- Monkey-patch for BC_Transformer_Chunking with observation history buffering ---
+from collections import deque as collections_deque
+
+def get_action_with_history_chunking(self, obs_dict, goal_dict=None):
+    """
+    Get action for BC_Transformer_Chunking with observation history buffering and action queue.
+    """
+    assert not self.nets.training
+
+    # Initialize buffers if needed
+    if not hasattr(self, "obs_history"):
+        self.obs_history = {}
+        self.context_length = self.algo_config.transformer.context_length
+        self.action_chunk_size = self.algo_config.transformer.action_chunk_size
+        self.action_queue = collections_deque(maxlen=self.action_chunk_size)
+
+    # If we have actions in the queue, just return the next one
+    if len(self.action_queue) > 0:
+        action = self.action_queue.popleft()
+        return action
+
+    # Otherwise, we need to run inference
+    # Filter obs_dict to only include keys the policy expects
+    expected_keys = self.obs_shapes.keys()
+    filtered_obs_dict = {k: v for k, v in obs_dict.items() if k in expected_keys}
+
+    # Append current obs to history
+    for k, v in filtered_obs_dict.items():
+        if k not in self.obs_history:
+            self.obs_history[k] = []
+        self.obs_history[k].append(v)
+
+    # Maintain context length
+    for k, v_list in self.obs_history.items():
+        while len(v_list) > self.context_length:
+            v_list.pop(0)
+
+    # Prepare input batch with correct shape [B, T, D]
+    input_obs = {}
+    for k, v_list in self.obs_history.items():
+        # Stack along time dimension: [B, T, D]
+        seq = torch.stack(v_list, dim=1)
+
+        # Pad if sequence is shorter than context_length
+        current_len = seq.shape[1]
+        if current_len < self.context_length:
+            pad_len = self.context_length - current_len
+            # Pad with the first observation
+            first_obs = seq[:, 0:1, :]
+            padding = first_obs.repeat(1, pad_len, *([1] * (first_obs.ndim - 2)))
+            seq = torch.cat([padding, seq], dim=1)
+
+        input_obs[k] = seq
+
+    # Run inference
+    output = self.nets["policy"](input_obs, actions=None, goal_dict=goal_dict)
+    # output shape: [1, T, chunk_size, ac_dim]
+    # Take the last timestep's chunk
+    action_chunk = output[:, -1, :, :]  # [1, chunk_size, ac_dim]
+
+    # Add all actions from chunk to queue
+    for i in range(self.action_chunk_size):
+        self.action_queue.append(action_chunk[:, i, :])  # Each is [1, ac_dim]
+
+    # Pop and return the first action
+    action = self.action_queue.popleft()
+    return action
+
+def reset_with_history_chunking(self):
+    """Reset observation history and action queue."""
+    self.obs_history = {}
+    if hasattr(self, 'action_chunk_size'):
+        self.action_queue = collections_deque(maxlen=self.action_chunk_size)
+    else:
+        self.action_queue = collections_deque()
+
+bc.BC_Transformer_Chunking.get_action = get_action_with_history_chunking
+bc.BC_Transformer_Chunking.reset = reset_with_history_chunking
+print("Applied BC_Transformer_Chunking monkey-patch for observation history buffering and action queue during rollout")
 
 # --- Monkey-patch for CDM Support ---
 def process_batch_for_training_with_divergence(self, batch):
@@ -506,14 +592,18 @@ with config.values_unlocked():
         config.algo.transformer.num_layers = 6
         config.algo.transformer.num_heads = 8
     config.algo.transformer.supervise_all_steps = False  # Only supervise last token
-    
+
+    # Action chunking settings
+    config.algo.transformer.action_chunk_size = args.action_chunk_size
+
     # NEW: Set divergence loss weight
     config.algo.loss.cdm_weight = cdm_weight
 
     # Training settings
     config.train.batch_size = args.batch_size
     config.train.num_epochs = args.epochs
-    config.train.seq_length = context_length  # Must match transformer.context_length
+    # seq_length must account for action chunking: need context_length + action_chunk_size - 1 timesteps
+    config.train.seq_length = context_length + args.action_chunk_size - 1
     config.train.cuda = torch.cuda.is_available()
     
     # Save checkpoints
@@ -530,7 +620,8 @@ with config.values_unlocked():
         config.train.seed = args.seed
 
     seed_suffix = f"_seed{args.seed}" if args.seed is not None else ""
-    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}_{decay_type}{seed_suffix}" #_exp{exp_num}"
+    chunk_suffix = f"_chunk{args.action_chunk_size}" if args.action_chunk_size > 1 else ""
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}_{decay_type}{seed_suffix}{chunk_suffix}" #_exp{exp_num}"
     
     # Rollout settings
     if args.validate:

@@ -1128,6 +1128,95 @@ class TransformerActorNetwork(MIMO_Transformer):
         return "action_dim={}".format(self.ac_dim)
 
 
+class TransformerChunkingActorNetwork(TransformerActorNetwork):
+    """
+    A Transformer policy network that predicts action chunks (multiple future actions per timestep).
+    Used for action chunking where the model outputs N actions at each timestep and all are supervised.
+    """
+    def __init__(
+        self,
+        obs_shapes,
+        ac_dim,
+        transformer_embed_dim,
+        transformer_num_layers,
+        transformer_num_heads,
+        transformer_context_length,
+        action_chunk_size=1,
+        transformer_emb_dropout=0.1,
+        transformer_attn_dropout=0.1,
+        transformer_block_output_dropout=0.1,
+        transformer_sinusoidal_embedding=False,
+        transformer_activation="gelu",
+        transformer_nn_parameter_for_timesteps=False,
+        goal_shapes=None,
+        encoder_kwargs=None,
+    ):
+        """
+        Args:
+            action_chunk_size (int): number of future actions to predict per timestep (default 1 = no chunking)
+            (other args same as TransformerActorNetwork)
+        """
+        self.action_chunk_size = action_chunk_size
+        super(TransformerChunkingActorNetwork, self).__init__(
+            obs_shapes=obs_shapes,
+            ac_dim=ac_dim,
+            transformer_embed_dim=transformer_embed_dim,
+            transformer_num_layers=transformer_num_layers,
+            transformer_num_heads=transformer_num_heads,
+            transformer_context_length=transformer_context_length,
+            transformer_emb_dropout=transformer_emb_dropout,
+            transformer_attn_dropout=transformer_attn_dropout,
+            transformer_block_output_dropout=transformer_block_output_dropout,
+            transformer_sinusoidal_embedding=transformer_sinusoidal_embedding,
+            transformer_activation=transformer_activation,
+            transformer_nn_parameter_for_timesteps=transformer_nn_parameter_for_timesteps,
+            goal_shapes=goal_shapes,
+            encoder_kwargs=encoder_kwargs,
+        )
+
+    def _get_output_shapes(self):
+        """
+        Override to output flattened action chunk: (chunk_size * ac_dim,)
+        The decoder outputs this flat shape, then forward() reshapes to [B, T, chunk_size, ac_dim].
+        """
+        output_shapes = OrderedDict(action=(self.action_chunk_size * self.ac_dim,))
+        return output_shapes
+
+    def output_shape(self, input_shape):
+        """Returns output shape [T, chunk_size, ac_dim]."""
+        mod = list(self.obs_shapes.keys())[0]
+        T = input_shape[mod][0]
+        TensorUtils.assert_size_at_dim(input_shape, size=T, dim=0,
+                msg="TransformerChunkingActorNetwork: input_shape inconsistent in temporal dimension")
+        return [T, self.action_chunk_size, self.ac_dim]
+
+    def forward(self, obs_dict, actions=None, goal_dict=None):
+        """
+        Forward pass that reshapes output to [B, T, chunk_size, ac_dim].
+        """
+        if self._is_goal_conditioned:
+            assert goal_dict is not None
+            mod = list(obs_dict.keys())[0]
+            goal_dict = TensorUtils.unsqueeze_expand_at(goal_dict, size=obs_dict[mod].shape[1], dim=1)
+
+        forward_kwargs = dict(obs=obs_dict, goal=goal_dict)
+        # outputs["action"] has shape [B, T, chunk_size * ac_dim]
+        outputs = MIMO_Transformer.forward(self, **forward_kwargs)
+
+        # Apply tanh squashing
+        outputs["action"] = torch.tanh(outputs["action"])
+
+        # Reshape from [B, T, chunk_size * ac_dim] to [B, T, chunk_size, ac_dim]
+        B, T, _ = outputs["action"].shape
+        outputs["action"] = outputs["action"].view(B, T, self.action_chunk_size, self.ac_dim)
+
+        return outputs["action"]
+
+    def _to_string(self):
+        """Info to pretty print."""
+        return "action_dim={}, action_chunk_size={}".format(self.ac_dim, self.action_chunk_size)
+
+
 class TransformerGMMActorNetwork(TransformerActorNetwork):
     """
     A Transformer GMM policy network that predicts sequences of action distributions from observation 
