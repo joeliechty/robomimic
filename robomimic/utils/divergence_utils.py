@@ -795,6 +795,138 @@ def compute_policy_divergence_during_training(model, batch, n_samples=1):
         print(f"DEBUG: compute_policy_divergence_during_training failed with: {type(e).__name__}: {e}")
         return None
 
+
+def compute_policy_divergence_chunked(model, batch, chunk_size, obs_key_pos='robot0_eef_pos',
+                                      obs_key_quat='robot0_eef_quat', n_samples=1):
+    """
+    Compute per-action divergence for action chunking models.
+
+    For action chunking where the model outputs [B, T, chunk_size, ac_dim], this function
+    computes divergence for each action in the chunk using a single perturbation.
+
+    Key difference from _estimate_divergence_jvp:
+    - Returns [B, chunk_size] instead of [B]
+    - JVP gives derivatives for all actions in the chunk
+    - Each action's trace is computed separately
+
+    Args:
+        model: BC policy network that outputs [B, T, chunk_size, ac_dim]
+        batch: Dictionary with 'obs' key containing observation dict
+        chunk_size: Number of actions in the chunk
+        obs_key_pos: str, observation key for end-effector position
+        obs_key_quat: str, observation key for end-effector quaternion
+        n_samples: int, number of random samples for Hutchinson estimator
+
+    Returns:
+        divergences: Tensor [B, chunk_size] representing per-action divergence
+    """
+    try:
+        goal_dict = batch.get('goal_obs', None)
+        obs_dict = batch['obs']
+
+        # Check if required keys exist
+        if obs_key_pos not in obs_dict or obs_key_quat not in obs_dict:
+            return None
+
+        ee_pos = obs_dict[obs_key_pos]
+        ee_quat = obs_dict[obs_key_quat]
+
+        # Handle temporal data: only perturb last timestep
+        is_temporal = ee_pos.dim() == 3
+        if is_temporal:
+            ee_pos_last = ee_pos[:, -1, :]
+            ee_quat_last = ee_quat[:, -1, :]
+        else:
+            ee_pos_last = ee_pos
+            ee_quat_last = ee_quat
+
+        batch_size = ee_pos_last.shape[0]
+        device = ee_pos_last.device
+        dtype = ee_pos_last.dtype
+
+        # Base end-effector pose
+        base_ee_pose = torch.cat([ee_pos_last, ee_quat_last], dim=-1)
+
+        # Save training state and force eval
+        was_training = model.training
+        model.eval()
+
+        try:
+            divergence_samples = []
+
+            for _ in range(n_samples):
+                # Sample random probe vector in tangent space
+                epsilon = torch.randn(batch_size, 6, device=device, dtype=dtype)
+
+                def f(twist):
+                    """
+                    Apply twist perturbation and return action chunk.
+                    Returns [B, chunk_size, ac_dim] instead of [B, ac_dim].
+                    """
+                    perturbed_ee_pose = add_twist_to_pose(base_ee_pose, twist, dt=1.0, w_first=False, world_frame=True)
+                    perturbed_pos = perturbed_ee_pose[:, :3]
+                    perturbed_quat = perturbed_ee_pose[:, 3:]
+
+                    perturbed_obs_dict = {k: v.clone() for k, v in obs_dict.items()}
+
+                    if is_temporal:
+                        perturbed_obs_dict[obs_key_pos] = obs_dict[obs_key_pos].clone()
+                        perturbed_obs_dict[obs_key_quat] = obs_dict[obs_key_quat].clone()
+                        perturbed_obs_dict[obs_key_pos][:, -1, :] = perturbed_pos
+                        perturbed_obs_dict[obs_key_quat][:, -1, :] = perturbed_quat
+                    else:
+                        perturbed_obs_dict[obs_key_pos] = perturbed_pos
+                        perturbed_obs_dict[obs_key_quat] = perturbed_quat
+
+                    output = model(obs_dict=perturbed_obs_dict, goal_dict=goal_dict)
+
+                    # Output is [B, T, chunk_size, ac_dim] for chunking models
+                    # Take last timestep's chunk
+                    if output.dim() == 4:
+                        output = output[:, -1, :, :]  # [B, chunk_size, ac_dim]
+                    elif output.dim() == 3:
+                        # Could be [B, T, ac_dim] or [B, chunk_size, ac_dim]
+                        # For chunking models this should be [B, T, chunk_size, ac_dim]
+                        output = output[:, -1, :]
+
+                    return output
+
+                # Compute JVP
+                zero_twist = torch.zeros(batch_size, 6, device=device, dtype=dtype)
+                output, jvp_val = jvp(f, (zero_twist,), (epsilon,))
+
+                # jvp_val shape: [B, chunk_size, ac_dim]
+                # Compute trace for each action in chunk
+                action_dim = jvp_val.shape[-1]
+                effective_dim = min(action_dim, 6)
+
+                # epsilon: [B, 6] -> expand to [B, 1, effective_dim]
+                epsilon_expanded = epsilon[:, None, :effective_dim]
+
+                # jvp_slice: [B, chunk_size, effective_dim]
+                jvp_slice = jvp_val[..., :effective_dim]
+
+                # Trace per action: [B, chunk_size]
+                divergence_sample = torch.sum(epsilon_expanded * jvp_slice, dim=-1)
+
+                if effective_dim < 6:
+                    divergence_sample = divergence_sample * (6.0 / effective_dim)
+
+                divergence_samples.append(divergence_sample)
+
+            # Average over samples
+            divergences = torch.stack(divergence_samples).mean(dim=0)  # [B, chunk_size]
+
+        finally:
+            if was_training:
+                model.train()
+
+        return divergences
+
+    except (KeyError, ValueError) as e:
+        print(f"DEBUG: compute_policy_divergence_chunked failed with: {type(e).__name__}: {e}")
+        return None
+
 # training data divergence and score estimation
 def add_div_and_score_to_training_data(load_path, save_path=None, verbose=True, k=4, bandwidth=0.1):
     """

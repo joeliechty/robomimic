@@ -19,7 +19,7 @@ import robomimic.utils.obs_utils as ObsUtils
 
 # TODO: import divergence utils
 # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
-from robomimic.utils.divergence_utils import compute_policy_divergence_during_training
+from robomimic.utils.divergence_utils import compute_policy_divergence_during_training, compute_policy_divergence_chunked
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 from robomimic.algo import register_algo_factory_func, PolicyAlgo
@@ -1067,6 +1067,20 @@ class BC_Transformer_Chunking(BC_Transformer):
         # Stack: [B, h, chunk_size, ac_dim]
         input_batch["actions"] = torch.stack(action_chunks, dim=1)
 
+        # CDM data: divergence and score need to be chunked too
+        # For CDM, we only need the chunk at the last observation (for loss computation)
+        if "divergence" in batch:
+            # batch["divergence"]: [B, seq_length]
+            # Extract chunk for last observation: [B, chunk_size]
+            last_t = h - 1
+            input_batch["divergence"] = batch["divergence"][:, last_t:last_t+chunk_size]
+
+        if "score" in batch:
+            # batch["score"]: [B, seq_length, D]
+            # Extract chunk for last observation: [B, chunk_size, D]
+            last_t = h - 1
+            input_batch["score"] = batch["score"][:, last_t:last_t+chunk_size, :]
+
         input_batch = TensorUtils.to_device(TensorUtils.to_float(input_batch), self.device)
         return input_batch
 
@@ -1088,7 +1102,11 @@ class BC_Transformer_Chunking(BC_Transformer):
 
     def _compute_losses(self, predictions, batch):
         """
-        Compute losses for action chunking.
+        Compute losses for action chunking with time weighting.
+
+        Loss formula:
+        L_FDM = Σ_{k=0}^{n-1} λ_k * (λ_CFM * L_CFM^(k) + λ_CDM * L_CDM^(k))
+
         predictions["actions"]: [B, T, chunk_size, ac_dim]
         batch["actions"]: [B, T, chunk_size, ac_dim]
         """
@@ -1096,20 +1114,71 @@ class BC_Transformer_Chunking(BC_Transformer):
         a_target = batch["actions"]
         actions = predictions["actions"]
 
-        # Compute losses across all dimensions (batch, time, chunk, action)
-        losses["l2_loss"] = nn.MSELoss()(actions, a_target)
-        losses["l1_loss"] = nn.SmoothL1Loss()(actions, a_target)
-        # Cosine loss on position components (first 3 dims of action)
-        losses["cos_loss"] = LossUtils.cosine_loss(actions[..., :3], a_target[..., :3])
+        chunk_size = self.action_chunk_size
+        device = actions.device
 
-        action_losses = [
-            self.algo_config.loss.l2_weight * losses["l2_loss"],
-            self.algo_config.loss.l1_weight * losses["l1_loss"],
-            self.algo_config.loss.cos_weight * losses["cos_loss"],
-        ]
-        action_loss = sum(action_losses)
+        # Compute time weights λ_k
+        weighting = self.algo_config.transformer.get("chunk_time_weighting", "uniform")
+        if weighting == "exponential":
+            decay = self.algo_config.transformer.get("chunk_time_decay", 0.5)
+            lambda_k = torch.exp(-decay * torch.arange(chunk_size, device=device, dtype=torch.float))
+        elif weighting == "linear":
+            lambda_k = 1.0 - torch.arange(chunk_size, device=device, dtype=torch.float) / max(chunk_size - 1, 1)
+        else:  # uniform (default)
+            lambda_k = torch.ones(chunk_size, device=device)
+
+        # Compute per-action BC losses (L_CFM per action)
+        # Shape: [B, T, chunk_size]
+        l2_per_action = ((actions - a_target) ** 2).mean(dim=-1)  # [B, T, chunk_size]
+        l1_per_action = F.smooth_l1_loss(actions, a_target, reduction='none').mean(dim=-1)
+        cos_per_action = 1 - F.cosine_similarity(actions[..., :3], a_target[..., :3], dim=-1)
+
+        # Weighted BC loss: λ_CFM = l2_weight * L2 + l1_weight * L1 + cos_weight * cos
+        bc_per_action = (
+            self.algo_config.loss.l2_weight * l2_per_action +
+            self.algo_config.loss.l1_weight * l1_per_action +
+            self.algo_config.loss.cos_weight * cos_per_action
+        )  # [B, T, chunk_size]
+
+        # Apply λ_k weighting and sum over chunk dimension
+        # λ_k shape: [chunk_size], broadcast over [B, T, chunk_size]
+        weighted_bc = (bc_per_action * lambda_k).sum(dim=-1)  # [B, T]
+        action_loss = weighted_bc.mean()
+
+        # Log unweighted losses for monitoring
+        losses["l2_loss"] = l2_per_action.mean()
+        losses["l1_loss"] = l1_per_action.mean()
+        losses["cos_loss"] = cos_per_action.mean()
+
+        # CDM loss for chunked actions (if enabled)
+        cdm_weight = self.algo_config.loss.get("cdm_weight", 0.0)
+        if "divergence" in batch and "score" in batch and cdm_weight > 0:
+            # Compute per-action divergence via JVP
+            div_v_t = compute_policy_divergence_chunked(
+                model=self.nets["policy"],
+                batch=batch,
+                chunk_size=self.action_chunk_size,
+                n_samples=1
+            )
+
+            if div_v_t is not None:
+                # CDM loss per action: L_CDM^(k)
+                cdm_per_action = LossUtils.divergence_loss_chunked(
+                    preds=predictions["actions"][:, -1, :, :],  # [B, chunk, ac]
+                    labels=batch["actions"][:, -1, :, :],
+                    div_v_t=div_v_t,  # [B, chunk]
+                    div_u_t=batch["divergence"],  # [B, chunk]
+                    score_t=batch["score"],  # [B, chunk, D-1]
+                    reduction='none'  # Return [B, chunk] instead of scalar
+                )
+
+                # Apply λ_k weighting: Σ λ_k * L_CDM^(k)
+                weighted_cdm = (cdm_per_action * lambda_k).sum(dim=-1).mean()
+
+                losses["cdm_loss"] = weighted_cdm
+                action_loss = action_loss + cdm_weight * weighted_cdm
+
         losses["action_loss"] = action_loss
-
         return losses
 
     def reset(self):
