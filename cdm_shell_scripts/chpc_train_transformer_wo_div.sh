@@ -34,13 +34,20 @@ if [ -n "$SEED" ]; then
   SEED_ARG="--seed ${SEED}"
 fi
 
+# set action chunk size to 16 for tool, transport, and square, else set to 1 for lift and can
+if [ "$DATASET" = "tool" ] || [ "$DATASET" = "transport" ] || [ "$DATASET" = "square" ]; then
+  ACTION_CHUNK_SIZE=16
+else
+  ACTION_CHUNK_SIZE=1
+fi
+
 # Define your Apptainer image path on scratch
 IMAGE_PATH="/scratch/general/vast/$USER/robomimic.sif"
 
 # Load Apptainer module
 module load apptainer
 
-echo "Launching Transformer NO CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"
+echo "Launching Transformer NO CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}, action chunk size: ${ACTION_CHUNK_SIZE}, seed: ${SEED}"
 echo "Start time: $(date)"
 
 # Launch Transformer WITHOUT Divergence
@@ -49,6 +56,6 @@ apptainer exec \
   --bind $(pwd):/app/robomimic \
   --pwd /app/robomimic \
   $IMAGE_PATH \
-  /bin/bash -c "export NUMBA_CACHE_DIR=/tmp && export PYTHONUSERBASE=/scratch/general/vast/$USER/.local && source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install --user -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V ${RESUME_FLAG} ${SEED_ARG}"
+  /bin/bash -c "export NUMBA_CACHE_DIR=/tmp && export PYTHONUSERBASE=/scratch/general/vast/$USER/.local && source /opt/conda/etc/profile.d/conda.sh && conda activate robomimic_venv && pip install --user -e . && python train_divergence_transformer_images.py -D ${DATASET} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V ${RESUME_FLAG} ${SEED_ARG} -ACS ${ACTION_CHUNK_SIZE}"
 
 echo "Job finished for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}"

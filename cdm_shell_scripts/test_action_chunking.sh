@@ -28,7 +28,7 @@ TIME_WEIGHTING="uniform"  # Options: uniform, exponential, linear
 TIME_DECAY=0.5  # Only used for exponential weighting
 
 # Build command arguments
-CMD_ARGS="-D ${DATASET} -E ${EPOCHS} -SF ${SAVE_FREQ} -B ${BATCH_SIZE} -ACS ${CHUNK_SIZE} --seed ${SEED}"
+CMD_ARGS="-D ${DATASET} -E ${EPOCHS} -SF ${SAVE_FREQ} -B ${BATCH_SIZE} -ACS ${CHUNK_SIZE} --seed ${SEED} -V -E2E"
 
 # Add CDM flag if requested
 if [ "$USE_CDM" = "True" ]; then
