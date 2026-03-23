@@ -220,7 +220,9 @@ from collections import deque as collections_deque
 
 def get_action_with_history_chunking(self, obs_dict, goal_dict=None):
     """
-    Get action for BC_Transformer_Chunking with observation history buffering and action queue.
+    Get action for BC_Transformer_Chunking with temporal ensembling.
+    Runs inference every step, keeps a buffer of last 16 action chunks,
+    and returns the weighted average of aligned predictions.
     """
     assert not self.nets.training
 
@@ -229,14 +231,12 @@ def get_action_with_history_chunking(self, obs_dict, goal_dict=None):
         self.obs_history = {}
         self.context_length = self.algo_config.transformer.context_length
         self.action_chunk_size = self.algo_config.transformer.action_chunk_size
-        self.action_queue = collections_deque(maxlen=self.action_chunk_size)
+        # Buffer to store action chunks: list of [1, chunk_size, ac_dim] tensors
+        # self.action_chunk_buffer = collections_deque(maxlen=16)
+        self.action_chunk_buffer = collections_deque(maxlen=self.action_chunk_size)
+        # Track timestep for temporal alignment
+        self.timestep = 0
 
-    # If we have actions in the queue, just return the next one
-    if len(self.action_queue) > 0:
-        action = self.action_queue.popleft()
-        return action
-
-    # Otherwise, we need to run inference
     # Filter obs_dict to only include keys the policy expects
     expected_keys = self.obs_shapes.keys()
     filtered_obs_dict = {k: v for k, v in obs_dict.items() if k in expected_keys}
@@ -269,31 +269,59 @@ def get_action_with_history_chunking(self, obs_dict, goal_dict=None):
 
         input_obs[k] = seq
 
-    # Run inference
+    # Run inference every step
     output = self.nets["policy"](input_obs, actions=None, goal_dict=goal_dict)
     # output shape: [1, T, chunk_size, ac_dim]
     # Take the last timestep's chunk
     action_chunk = output[:, -1, :, :]  # [1, chunk_size, ac_dim]
 
-    # Add all actions from chunk to queue
-    for i in range(self.action_chunk_size):
-        self.action_queue.append(action_chunk[:, i, :])  # Each is [1, ac_dim]
+    # Add the new action chunk to buffer with current timestep
+    self.action_chunk_buffer.append((self.timestep, action_chunk))
 
-    # Pop and return the first action
-    action = self.action_queue.popleft()
+    # Temporal ensembling: collect all predictions for current timestep
+    predictions = []
+    weights = []
+
+    for pred_timestep, chunk in self.action_chunk_buffer:
+        # Calculate the offset: how many steps ahead was this prediction made?
+        offset = self.timestep - pred_timestep
+
+        # If offset is within the chunk size, this chunk has a prediction for current timestep
+        if 0 <= offset < self.action_chunk_size:
+            action_for_current_step = chunk[:, offset, :]  # [1, ac_dim]
+            predictions.append(action_for_current_step)
+
+            # Exponential weighting: more recent predictions get higher weight
+            # You can adjust the decay factor (0.9) to control the weighting
+            weight = 0.9 ** offset
+            weights.append(weight)
+
+    # Normalize weights
+    if len(predictions) > 0:
+        predictions = torch.stack(predictions, dim=0)  # [num_predictions, 1, ac_dim]
+        weights = torch.tensor(weights, device=predictions.device, dtype=predictions.dtype)
+        weights = weights / weights.sum()  # Normalize to sum to 1
+
+        # Weighted average: [num_predictions, 1, ac_dim] * [num_predictions, 1, 1] -> [1, ac_dim]
+        action = (predictions * weights.view(-1, 1, 1)).sum(dim=0)
+    else:
+        # Fallback: if no predictions available (shouldn't happen), use first action from chunk
+        action = action_chunk[:, 0, :]
+
+    # Increment timestep counter
+    self.timestep += 1
+
     return action
 
 def reset_with_history_chunking(self):
-    """Reset observation history and action queue."""
+    """Reset observation history and temporal ensembling buffers."""
     self.obs_history = {}
-    if hasattr(self, 'action_chunk_size'):
-        self.action_queue = collections_deque(maxlen=self.action_chunk_size)
-    else:
-        self.action_queue = collections_deque()
+    self.action_chunk_buffer = collections_deque(maxlen=16)
+    self.timestep = 0
 
 bc.BC_Transformer_Chunking.get_action = get_action_with_history_chunking
 bc.BC_Transformer_Chunking.reset = reset_with_history_chunking
-print("Applied BC_Transformer_Chunking monkey-patch for observation history buffering and action queue during rollout")
+print("Applied BC_Transformer_Chunking monkey-patch for temporal ensembling with action chunk buffer during rollout")
 
 # --- Monkey-patch for CDM Support ---
 def process_batch_for_training_with_divergence(self, batch):
