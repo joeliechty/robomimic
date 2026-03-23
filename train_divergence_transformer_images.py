@@ -627,6 +627,10 @@ with config.values_unlocked():
     # NEW: Set divergence loss weight
     config.algo.loss.cdm_weight = cdm_weight
 
+    if args.dataset in ["tool"]:
+        config.algo.loss.l2_weight = 0.0  # Turn off L2 loss
+        config.algo.loss.l1_weight = 1.0  # Turn on L1 loss
+
     # Training settings
     config.train.batch_size = args.batch_size
     config.train.num_epochs = args.epochs
