@@ -153,9 +153,10 @@ def discover_runs(results_root: pathlib.Path) -> list[RunInfo]:
 
             # Per-task filter for config directory names
             TASK_FILTERS = {
-                "can": ["3000_50", "1000_50"],
+                "can": ["3000_50", "1500_50"],
                 "lift": ["50_1"],
-                "square": ["4000_100"]
+                "square": ["4000_100"],
+                "tool": ["4000_100"],
             }
             task_filter = TASK_FILTERS.get(task)
 
@@ -342,6 +343,13 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
             if ll not in labels:
                 handles.append(hh)
                 labels.append(ll)
+    
+    # set the rollout success rate y axis to be between 0 and 1
+    for ax, (metric_name, _, _) in zip(axes_flat, active_metrics):
+        if metric_name == "Success Rate":
+            ax.set_ylim(-0.01, 1.01)
+            # set the ticks to start at 0 and go to 1 by 0.25
+            
 
     fig.legend(
         handles, labels,

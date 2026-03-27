@@ -107,3 +107,6 @@ class BCConfig(BaseConfig):
         self.algo.transformer.supervise_all_steps = False           # if true, supervise all intermediate actions, otherwise only final one
         self.algo.transformer.nn_parameter_for_timesteps = True     # if true, use nn.Parameter otherwise use nn.Embedding
         self.algo.transformer.pred_future_acs = False               # shift action prediction forward to predict future actions instead of past actions
+        self.algo.transformer.action_chunk_size = 1                 # number of future actions to predict per timestep (1 = no chunking)
+        self.algo.transformer.chunk_time_weighting = "uniform"      # time weighting for action chunks: "uniform", "exponential", "linear"
+        self.algo.transformer.chunk_time_decay = 0.5                # decay rate for exponential time weighting

@@ -1,7 +1,7 @@
 """
 Implementation of Behavioral Cloning (BC).
 """
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 import torch
 import torch.nn as nn
@@ -19,7 +19,7 @@ import robomimic.utils.obs_utils as ObsUtils
 
 # TODO: import divergence utils
 # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
-from robomimic.utils.divergence_utils import compute_policy_divergence_during_training
+from robomimic.utils.divergence_utils import compute_policy_divergence_during_training, compute_policy_divergence_chunked
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 from robomimic.algo import register_algo_factory_func, PolicyAlgo
@@ -73,7 +73,12 @@ def algo_config_to_class(algo_config):
         if rnn_enabled:
             algo_class, algo_kwargs = BC_RNN, {}
         elif transformer_enabled:
-            algo_class, algo_kwargs = BC_Transformer, {}
+            # Check for action chunking
+            action_chunk_size = algo_config.transformer.get("action_chunk_size", 1)
+            if action_chunk_size > 1:
+                algo_class, algo_kwargs = BC_Transformer_Chunking, {}
+            else:
+                algo_class, algo_kwargs = BC_Transformer, {}
         else:
             algo_class, algo_kwargs = BC, {}
 
@@ -996,7 +1001,211 @@ class BC_Transformer_GMM(BC_Transformer):
         """
         log = PolicyAlgo.log_info(self, info)
         log["Loss"] = info["losses"]["action_loss"].item()
-        log["Log_Likelihood"] = info["losses"]["log_probs"].item() 
+        log["Log_Likelihood"] = info["losses"]["log_probs"].item()
         if "policy_grad_norms" in info:
             log["Policy_Grad_Norms"] = info["policy_grad_norms"]
         return log
+
+
+class BC_Transformer_Chunking(BC_Transformer):
+    """
+    BC training with Transformer policy that outputs action chunks.
+    Predicts multiple future actions per timestep and supervises each action in the chunk.
+    """
+    def _create_networks(self):
+        """
+        Creates networks and places them into @self.nets.
+        """
+        assert self.algo_config.transformer.enabled
+
+        self.nets = nn.ModuleDict()
+        self.nets["policy"] = PolicyNets.TransformerChunkingActorNetwork(
+            obs_shapes=self.obs_shapes,
+            goal_shapes=self.goal_shapes,
+            ac_dim=self.ac_dim,
+            action_chunk_size=self.algo_config.transformer.action_chunk_size,
+            encoder_kwargs=ObsUtils.obs_encoder_kwargs_from_config(self.obs_config.encoder),
+            **BaseNets.transformer_args_from_config(self.algo_config.transformer),
+        )
+        self._set_params_from_config()
+        self.nets = self.nets.float().to(self.device)
+
+    def _set_params_from_config(self):
+        """
+        Read specific config variables we need for training / eval.
+        """
+        super()._set_params_from_config()
+        self.action_chunk_size = self.algo_config.transformer.action_chunk_size
+        self.action_queue = deque(maxlen=self.action_chunk_size)
+
+    def process_batch_for_training(self, batch):
+        """
+        Processes input batch to prepare action chunks for supervision.
+        For each observation at time t, we supervise against actions [t, t+1, ..., t+chunk_size-1].
+        """
+        input_batch = dict()
+        h = self.context_length
+        chunk_size = self.action_chunk_size
+
+        # Observations: [B, context_length, obs_dim]
+        input_batch["obs"] = {k: batch["obs"][k][:, :h, :] for k in batch["obs"]}
+        input_batch["goal_obs"] = batch.get("goal_obs", None)
+
+        # Actions: need h + chunk_size - 1 total timesteps from batch
+        # For each timestep t in [0, h-1], supervise actions [t, t+1, ..., t+chunk_size-1]
+        # Create action targets of shape [B, h, chunk_size, ac_dim]
+        B = batch["actions"].shape[0]
+        ac_dim = batch["actions"].shape[-1]
+
+        # Stack actions into chunks
+        action_chunks = []
+        for t in range(h):
+            # Actions from t to t+chunk_size
+            chunk = batch["actions"][:, t:t+chunk_size, :]  # [B, chunk_size, ac_dim]
+            action_chunks.append(chunk)
+
+        # Stack: [B, h, chunk_size, ac_dim]
+        input_batch["actions"] = torch.stack(action_chunks, dim=1)
+
+        # CDM data: divergence and score need to be chunked too
+        # For CDM, we only need the chunk at the last observation (for loss computation)
+        if "divergence" in batch:
+            # batch["divergence"]: [B, seq_length]
+            # Extract chunk for last observation: [B, chunk_size]
+            last_t = h - 1
+            input_batch["divergence"] = batch["divergence"][:, last_t:last_t+chunk_size]
+
+        if "score" in batch:
+            # batch["score"]: [B, seq_length, D]
+            # Extract chunk for last observation: [B, chunk_size, D]
+            last_t = h - 1
+            input_batch["score"] = batch["score"][:, last_t:last_t+chunk_size, :]
+
+        input_batch = TensorUtils.to_device(TensorUtils.to_float(input_batch), self.device)
+        return input_batch
+
+    def _forward_training(self, batch, epoch=None):
+        """
+        Forward pass for training. Network outputs [B, T, chunk_size, ac_dim].
+        """
+        TensorUtils.assert_size_at_dim(
+            batch["obs"],
+            size=(self.context_length),
+            dim=1,
+            msg="Error: expect temporal dimension of obs batch to match transformer context length {}".format(self.context_length),
+        )
+
+        predictions = OrderedDict()
+        # Network output: [B, T, chunk_size, ac_dim]
+        predictions["actions"] = self.nets["policy"](obs_dict=batch["obs"], actions=None, goal_dict=batch["goal_obs"])
+        return predictions
+
+    def _compute_losses(self, predictions, batch):
+        """
+        Compute losses for action chunking with time weighting.
+
+        Loss formula:
+        L_FDM = Σ_{k=0}^{n-1} λ_k * (λ_CFM * L_CFM^(k) + λ_CDM * L_CDM^(k))
+
+        predictions["actions"]: [B, T, chunk_size, ac_dim]
+        batch["actions"]: [B, T, chunk_size, ac_dim]
+        """
+        losses = OrderedDict()
+        a_target = batch["actions"]
+        actions = predictions["actions"]
+
+        chunk_size = self.action_chunk_size
+        device = actions.device
+
+        # Compute time weights λ_k
+        weighting = self.algo_config.transformer.get("chunk_time_weighting", "uniform")
+        if weighting == "exponential":
+            decay = self.algo_config.transformer.get("chunk_time_decay", 0.5)
+            lambda_k = torch.exp(-decay * torch.arange(chunk_size, device=device, dtype=torch.float))
+        elif weighting == "linear":
+            lambda_k = 1.0 - torch.arange(chunk_size, device=device, dtype=torch.float) / max(chunk_size - 1, 1)
+        else:  # uniform (default)
+            lambda_k = torch.ones(chunk_size, device=device)
+
+        # Compute per-action BC losses (L_CFM per action)
+        # Shape: [B, T, chunk_size]
+        l2_per_action = ((actions - a_target) ** 2).mean(dim=-1)  # [B, T, chunk_size]
+        l1_per_action = F.smooth_l1_loss(actions, a_target, reduction='none').mean(dim=-1)
+        cos_per_action = 1 - F.cosine_similarity(actions[..., :3], a_target[..., :3], dim=-1)
+
+        # Weighted BC loss: λ_CFM = l2_weight * L2 + l1_weight * L1 + cos_weight * cos
+        bc_per_action = (
+            self.algo_config.loss.l2_weight * l2_per_action +
+            self.algo_config.loss.l1_weight * l1_per_action +
+            self.algo_config.loss.cos_weight * cos_per_action
+        )  # [B, T, chunk_size]
+
+        # Apply λ_k weighting and sum over chunk dimension
+        # λ_k shape: [chunk_size], broadcast over [B, T, chunk_size]
+        weighted_bc = (bc_per_action * lambda_k).sum(dim=-1)  # [B, T]
+        action_loss = weighted_bc.mean()
+
+        # Log unweighted losses for monitoring
+        losses["l2_loss"] = l2_per_action.mean()
+        losses["l1_loss"] = l1_per_action.mean()
+        losses["cos_loss"] = cos_per_action.mean()
+
+        # CDM loss for chunked actions (if enabled)
+        cdm_weight = self.algo_config.loss.get("cdm_weight", 0.0)
+        if "divergence" in batch and "score" in batch and cdm_weight > 0:
+            # Compute per-action divergence via JVP
+            div_v_t = compute_policy_divergence_chunked(
+                model=self.nets["policy"],
+                batch=batch,
+                chunk_size=self.action_chunk_size,
+                n_samples=1
+            )
+
+            if div_v_t is not None:
+                # CDM loss per action: L_CDM^(k)
+                cdm_per_action = LossUtils.divergence_loss_chunked(
+                    preds=predictions["actions"][:, -1, :, :],  # [B, chunk, ac]
+                    labels=batch["actions"][:, -1, :, :],
+                    div_v_t=div_v_t,  # [B, chunk]
+                    div_u_t=batch["divergence"],  # [B, chunk]
+                    score_t=batch["score"],  # [B, chunk, D-1]
+                    reduction='none'  # Return [B, chunk] instead of scalar
+                )
+
+                # Apply λ_k weighting: Σ λ_k * L_CDM^(k)
+                weighted_cdm = (cdm_per_action * lambda_k).sum(dim=-1).mean()
+
+                losses["cdm_loss"] = weighted_cdm
+                action_loss = action_loss + cdm_weight * weighted_cdm
+
+        losses["action_loss"] = action_loss
+        return losses
+
+    def reset(self):
+        """
+        Reset the action queue at the start of a new rollout.
+        """
+        self.action_queue = deque(maxlen=self.action_chunk_size)
+
+    def get_action(self, obs_dict, goal_dict=None):
+        """
+        Get policy action using action queue.
+        When queue is empty, run inference and fill with chunk_size actions.
+        Pop and return one action at a time.
+        """
+        assert not self.nets.training
+
+        if len(self.action_queue) == 0:
+            # Run inference to get action chunk
+            output = self.nets["policy"](obs_dict, actions=None, goal_dict=goal_dict)
+            # output shape: [1, T, chunk_size, ac_dim]
+            # Take the last timestep's chunk
+            action_chunk = output[:, -1, :, :]  # [1, chunk_size, ac_dim]
+
+            # Add all actions from chunk to queue
+            for i in range(self.action_chunk_size):
+                self.action_queue.append(action_chunk[:, i, :])  # Each is [1, ac_dim]
+
+        # Pop and return the next action
+        action = self.action_queue.popleft()  # [1, ac_dim]
+        return action

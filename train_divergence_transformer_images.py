@@ -1,5 +1,11 @@
 import robomimic
 import os
+import sys
+import shutil
+import tempfile
+import atexit
+import signal
+import getpass
 import torch
 from robomimic.config import config_factory
 from robomimic.scripts.train import train
@@ -28,6 +34,77 @@ def sync_all_attributes(source_path, target_path):
                 print(f"  [Warning] {demo} found in source but not in target. Skipping.")
         
         print(f"  [OK] Attributes for {len(demos)} demos synced.")
+
+
+# --- Per-job local HDF5 copy (parallel-safe) + cleanup ---
+_LOCAL_DATASET_COPY_PATH = None
+_KEEP_LOCAL_COPY_FLAG = False
+_LOCAL_COPY_CLEANUP_DONE = False
+
+
+def _remove_local_dataset_copy():
+    """Remove the temporary per-job dataset file if registered and not --keep_local_copy."""
+    global _LOCAL_COPY_CLEANUP_DONE
+    if _KEEP_LOCAL_COPY_FLAG or _LOCAL_COPY_CLEANUP_DONE:
+        return
+    p = _LOCAL_DATASET_COPY_PATH
+    if p and os.path.isfile(p):
+        try:
+            os.remove(p)
+            print(f"Removed temporary dataset copy: {p}")
+        except OSError as e:
+            print(f"Warning: could not remove temporary dataset copy {p}: {e}")
+    _LOCAL_COPY_CLEANUP_DONE = True
+
+
+def register_local_dataset_cleanup(local_path, keep):
+    """
+    Register deletion of local_path on exit or SIGTERM/SIGINT unless keep is True.
+    """
+    global _LOCAL_DATASET_COPY_PATH, _KEEP_LOCAL_COPY_FLAG
+    _LOCAL_DATASET_COPY_PATH = local_path
+    _KEEP_LOCAL_COPY_FLAG = keep
+    if keep:
+        print(f"Keeping local dataset copy (--keep_local_copy): {local_path}")
+        return
+    atexit.register(_remove_local_dataset_copy)
+
+    def _signal_cleanup(signum, frame):
+        _remove_local_dataset_copy()
+        sys.exit(128 + signum)
+
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _signal_cleanup)
+        except ValueError:
+            # e.g. non-main thread
+            pass
+
+
+def get_local_copy_base_dir(args):
+    """Resolve directory for per-job dataset copies (plan: SLURM_TMPDIR, then scratch/local, else temp)."""
+    if getattr(args, "local_copy_dir", None):
+        return os.path.abspath(os.path.expanduser(args.local_copy_dir))
+    slurm_tmp = os.environ.get("SLURM_TMPDIR")
+    if slurm_tmp:
+        return os.path.abspath(slurm_tmp)
+    user = os.environ.get("USER") or getpass.getuser()
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    scratch_local = os.path.join("/scratch/local", user, job_id)
+    if os.path.isdir("/scratch/local"):
+        return scratch_local
+    return tempfile.gettempdir()
+
+
+def make_unique_local_dataset_path(shared_target, copy_dir):
+    """Unique filename under copy_dir to avoid collisions across array tasks / PIDs."""
+    base = os.path.basename(shared_target)
+    stem, ext = os.path.splitext(base)
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+    pid = os.getpid()
+    uniq = f"{stem}_job{job_id}_pid{pid}{ext}"
+    return os.path.join(copy_dir, uniq)
+
 
 # Update these paths to your actual local file locations
 # source = "/app/robomimic/dataset/can/can_demo.hdf5"
@@ -145,6 +222,30 @@ def parse_args():
         default=None,
         help="random seed for reproducibility (omit to leave unseeded)"
     )
+    parser.add_argument(
+        "--action_chunk_size", "-ACS",
+        type=int,
+        default=1,
+        help="number of future actions to predict per timestep (1 = no chunking)"
+    )
+    parser.add_argument(
+        "--use_local_dataset_copy",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Copy feats HDF5 to job-local storage so parallel jobs do not contend on one file (default: on). "
+        "Use --no-use_local_dataset_copy to read the shared path in place.",
+    )
+    parser.add_argument(
+        "--local_copy_dir",
+        type=str,
+        default=None,
+        help="Directory for the temporary dataset copy (default: SLURM_TMPDIR, else /scratch/local/$USER/$SLURM_JOB_ID, else system temp).",
+    )
+    parser.add_argument(
+        "--keep_local_copy",
+        action="store_true",
+        help="Do not delete the temporary dataset copy after training (debugging).",
+    )
     return parser.parse_args()
 
 # --- Monkey-patch for observation history buffering during rollout ---
@@ -208,6 +309,114 @@ bc.BC_Transformer.get_action = get_action_with_history
 bc.BC_Transformer.reset = reset_with_history
 print("Applied BC_Transformer monkey-patch for observation history buffering during rollout")
 
+# --- Monkey-patch for BC_Transformer_Chunking with observation history buffering ---
+from collections import deque as collections_deque
+
+def get_action_with_history_chunking(self, obs_dict, goal_dict=None):
+    """
+    Get action for BC_Transformer_Chunking with temporal ensembling.
+    Runs inference every step, keeps a buffer of last 16 action chunks,
+    and returns the weighted average of aligned predictions.
+    """
+    assert not self.nets.training
+
+    # Initialize buffers if needed
+    if not hasattr(self, "obs_history"):
+        self.obs_history = {}
+        self.context_length = self.algo_config.transformer.context_length
+        self.action_chunk_size = self.algo_config.transformer.action_chunk_size
+        # Buffer to store action chunks: list of [1, chunk_size, ac_dim] tensors
+        # self.action_chunk_buffer = collections_deque(maxlen=16)
+        self.action_chunk_buffer = collections_deque(maxlen=self.action_chunk_size)
+        # Track timestep for temporal alignment
+        self.timestep = 0
+
+    # Filter obs_dict to only include keys the policy expects
+    expected_keys = self.obs_shapes.keys()
+    filtered_obs_dict = {k: v for k, v in obs_dict.items() if k in expected_keys}
+
+    # Append current obs to history
+    for k, v in filtered_obs_dict.items():
+        if k not in self.obs_history:
+            self.obs_history[k] = []
+        self.obs_history[k].append(v)
+
+    # Maintain context length
+    for k, v_list in self.obs_history.items():
+        while len(v_list) > self.context_length:
+            v_list.pop(0)
+
+    # Prepare input batch with correct shape [B, T, D]
+    input_obs = {}
+    for k, v_list in self.obs_history.items():
+        # Stack along time dimension: [B, T, D]
+        seq = torch.stack(v_list, dim=1)
+
+        # Pad if sequence is shorter than context_length
+        current_len = seq.shape[1]
+        if current_len < self.context_length:
+            pad_len = self.context_length - current_len
+            # Pad with the first observation
+            first_obs = seq[:, 0:1, :]
+            padding = first_obs.repeat(1, pad_len, *([1] * (first_obs.ndim - 2)))
+            seq = torch.cat([padding, seq], dim=1)
+
+        input_obs[k] = seq
+
+    # Run inference every step
+    output = self.nets["policy"](input_obs, actions=None, goal_dict=goal_dict)
+    # output shape: [1, T, chunk_size, ac_dim]
+    # Take the last timestep's chunk
+    action_chunk = output[:, -1, :, :]  # [1, chunk_size, ac_dim]
+
+    # Add the new action chunk to buffer with current timestep
+    self.action_chunk_buffer.append((self.timestep, action_chunk))
+
+    # Temporal ensembling: collect all predictions for current timestep
+    predictions = []
+    weights = []
+
+    for pred_timestep, chunk in self.action_chunk_buffer:
+        # Calculate the offset: how many steps ahead was this prediction made?
+        offset = self.timestep - pred_timestep
+
+        # If offset is within the chunk size, this chunk has a prediction for current timestep
+        if 0 <= offset < self.action_chunk_size:
+            action_for_current_step = chunk[:, offset, :]  # [1, ac_dim]
+            predictions.append(action_for_current_step)
+
+            # Exponential weighting: more recent predictions get higher weight
+            # You can adjust the decay factor (0.9) to control the weighting
+            weight = 0.9 ** offset
+            weights.append(weight)
+
+    # Normalize weights
+    if len(predictions) > 0:
+        predictions = torch.stack(predictions, dim=0)  # [num_predictions, 1, ac_dim]
+        weights = torch.tensor(weights, device=predictions.device, dtype=predictions.dtype)
+        weights = weights / weights.sum()  # Normalize to sum to 1
+
+        # Weighted average: [num_predictions, 1, ac_dim] * [num_predictions, 1, 1] -> [1, ac_dim]
+        action = (predictions * weights.view(-1, 1, 1)).sum(dim=0)
+    else:
+        # Fallback: if no predictions available (shouldn't happen), use first action from chunk
+        action = action_chunk[:, 0, :]
+
+    # Increment timestep counter
+    self.timestep += 1
+
+    return action
+
+def reset_with_history_chunking(self):
+    """Reset observation history and temporal ensembling buffers."""
+    self.obs_history = {}
+    self.action_chunk_buffer = collections_deque(maxlen=16)
+    self.timestep = 0
+
+bc.BC_Transformer_Chunking.get_action = get_action_with_history_chunking
+bc.BC_Transformer_Chunking.reset = reset_with_history_chunking
+print("Applied BC_Transformer_Chunking monkey-patch for temporal ensembling with action chunk buffer during rollout")
+
 # --- Monkey-patch for CDM Support ---
 def process_batch_for_training_with_divergence(self, batch):
     input_batch = dict()
@@ -255,6 +464,72 @@ def process_batch_for_training_with_divergence(self, batch):
 
     input_batch = TensorUtils.to_device(TensorUtils.to_float(input_batch), self.device)
     return input_batch
+
+
+# -- Monkey-patch for memory-efficient data loading with images during training ---
+import robomimic.utils.dataset as ds
+
+def get_item_efficient(self, index):
+    """
+    Monkey-patched get_item to only fetch `context_length` images, 
+    but the full chunked sequence for actions/goals/divergence data.
+    """
+    demo_id = self._index_to_demo_id[index]
+    demo_start_index = self._demo_id_to_start_indices[demo_id]
+    demo_length = self._demo_id_to_demo_length[demo_id]
+
+    demo_index_offset = 0 if self.pad_frame_stack else (self.n_frame_stack - 1)
+    index_in_demo = index - demo_start_index + demo_index_offset
+
+    demo_length_offset = 0 if self.pad_seq_length else (self.seq_length - 1)
+    end_index_in_demo = demo_length - demo_length_offset
+
+    # FETCH FULL SEQUENCE for actions/divergence (fast, low memory)
+    meta = self.get_dataset_sequence_from_demo(
+        demo_id,
+        index_in_demo=index_in_demo,
+        keys=self.dataset_keys,
+        num_frames_to_stack=self.n_frame_stack - 1,
+        seq_length=self.seq_length
+    )
+
+    goal_index = None
+    if self.goal_mode == "last":
+        goal_index = end_index_in_demo - 1
+
+    # DETERMINE HOW MANY IMAGES WE ACTUALLY NEED
+    # seq_length = context_length + action_chunk_size - 1
+    # We retrieve the global args to find the action_chunk_size
+    import __main__
+    chunk_size = __main__.args.action_chunk_size if hasattr(__main__, 'args') else 1
+    obs_seq_length = self.seq_length - chunk_size + 1
+
+    # FETCH SHORT SEQUENCE for images (saves massive amounts of memory)
+    meta["obs"] = self.get_obs_sequence_from_demo(
+        demo_id,
+        index_in_demo=index_in_demo,
+        keys=self.obs_keys,
+        num_frames_to_stack=self.n_frame_stack - 1,
+        seq_length=obs_seq_length,
+        prefix="obs"
+    )
+
+    if self.goal_mode is not None:
+        goal = self.get_obs_sequence_from_demo(
+            demo_id,
+            index_in_demo=goal_index,
+            keys=self.obs_keys,
+            num_frames_to_stack=0,
+            seq_length=1,
+            prefix="next_obs",
+        )
+        meta["goal_obs"] = {k: goal[k][0] for k in goal}
+
+    return meta
+
+# Apply the patch
+ds.SequenceDataset.get_item = get_item_efficient
+print("Applied SequenceDataset monkey-patch for memory-efficient Chunking DataLoad")
 
 bc.BC_Transformer.process_batch_for_training = process_batch_for_training_with_divergence
 print("Applied BC_Transformer monkey-patch for process_batch_for_training (CDM)")
@@ -388,13 +663,37 @@ if args.dataset in ["lift", "can", "square", "tool"]:
 else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', 'square', or 'tool'.")
 
+target = os.path.abspath(os.path.expanduser(target))
+source = os.path.abspath(os.path.expanduser(source))
+
+# Path to your dataset with divergence info (per-job copy when enabled)
+dataset_path = target
 if os.path.exists(source) and os.path.exists(target):
-    sync_all_attributes(source, target)
+    if args.use_local_dataset_copy:
+        copy_dir = get_local_copy_base_dir(args)
+        os.makedirs(copy_dir, exist_ok=True)
+        local_target = make_unique_local_dataset_path(target, copy_dir)
+        print(
+            f"Per-job dataset copy (parallel-safe):\n"
+            f"  shared: {target}\n"
+            f"  local:  {local_target}"
+        )
+        try:
+            shutil.copy2(target, local_target)
+        except OSError as e:
+            raise RuntimeError(
+                f"Failed to copy dataset to {local_target}. "
+                f"Check space and permissions in {copy_dir}."
+            ) from e
+        dataset_path = local_target
+        register_local_dataset_cleanup(local_target, args.keep_local_copy)
+        sync_all_attributes(source, local_target)
+    else:
+        sync_all_attributes(source, target)
 else:
     print("Check your file paths!")
 
-# Path to your dataset with divergence info
-dataset_path = os.path.expanduser(target)
+dataset_path = os.path.abspath(os.path.expanduser(dataset_path))
 
 # Create default BC configuration
 config = config_factory(algo_name="bc")
@@ -505,14 +804,22 @@ with config.values_unlocked():
         config.algo.transformer.num_layers = 6
         config.algo.transformer.num_heads = 8
     config.algo.transformer.supervise_all_steps = False  # Only supervise last token
-    
+
+    # Action chunking settings
+    config.algo.transformer.action_chunk_size = args.action_chunk_size
+
     # NEW: Set divergence loss weight
     config.algo.loss.cdm_weight = cdm_weight
+
+    if args.dataset in ["tool"]:
+        config.algo.loss.l2_weight = 0.0  # Turn off L2 loss
+        config.algo.loss.l1_weight = 1.0  # Turn on L1 loss
 
     # Training settings
     config.train.batch_size = args.batch_size
     config.train.num_epochs = args.epochs
-    config.train.seq_length = context_length  # Must match transformer.context_length
+    # seq_length must account for action chunking: need context_length + action_chunk_size - 1 timesteps
+    config.train.seq_length = context_length + args.action_chunk_size - 1
     config.train.cuda = torch.cuda.is_available()
     
     # Save checkpoints
@@ -529,14 +836,18 @@ with config.values_unlocked():
         config.train.seed = args.seed
 
     seed_suffix = f"_seed{args.seed}" if args.seed is not None else ""
-    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}_{decay_type}{seed_suffix}" #_exp{exp_num}"
+    chunk_suffix = f"_chunk{args.action_chunk_size}" if args.action_chunk_size > 1 else ""
+    config.experiment.name = f"{portion_prefix}_{args.epochs}_{args.save_freq}_{decay_type}{seed_suffix}{chunk_suffix}" #_exp{exp_num}"
     
     # Rollout settings
     if args.validate:
         config.experiment.rollout.enabled = True
         config.experiment.rollout.rate = args.save_freq
         config.experiment.rollout.n = 50  # number of rollouts per evaluation
-        config.experiment.rollout.horizon = 400  # max steps per rollout
+        if args.dataset == "tool":
+            config.experiment.rollout.horizon = 800  # tool task is longer, so use longer horizon
+        else:
+            config.experiment.rollout.horizon = 400  # max steps per rollout
         
         # Enable rendering for both video and observations
         config.experiment.render = True

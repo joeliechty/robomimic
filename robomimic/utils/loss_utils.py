@@ -11,9 +11,9 @@ import torch.nn.functional as F
 def divergence_loss(preds, labels, div_v_t, div_u_t, score_t):
     """
     Compute flow matching loss with divergence regularization
-    
+
     L_CDM(θ) = E[ |(∇·u_t - ∇·v_t) + (u_t - v_t)·∇log p_t| ]
-    
+
     Args:
         preds: Prediected flow field sampels (robot actions including gripper command) [B,D]
         labels: Target flow field samples (robot actions including gripper command) [B,D]
@@ -38,25 +38,71 @@ def divergence_loss(preds, labels, div_v_t, div_u_t, score_t):
     label_twist = label_pose / dt  # [B, D-1, units: position m/s, orientation rad/s
 
     # TERM 1: (∇·u_t - ∇·v_t)
-    # ---------------------------    
+    # ---------------------------
     # The true divergences are already wrt time since they were computed using savgol with dt=OCS control rate
     # So just need to scale predicted divergence wrt time
     div_v_t = div_v_t / dt  # [B], units: 1/s
 
     # Difference of divergences
     divergence_diff = div_u_t - div_v_t # [B], units: 1/s
-    
+
     # TERM 2: (u_t - v_t)·∇log p_t
     # ------------------------------
     # Velocity difference
     velocity_diff = label_twist - pred_twist # [B,D-1], units: position m/s, orientation rad/s
-    
+
     # Dot product with score (sum over dimensions for each batch)
     velocity_score_dot = (velocity_diff * score_t).sum(dim=1) # [B], units: 1/s
-    
+
     # COMBINED DIVERGENCE LOSS
     # L_CDM = E[ |(∇·u - ∇·v) + (u - v)·score| ], units: 1/s
     return torch.abs(divergence_diff + velocity_score_dot).mean()
+
+
+def divergence_loss_chunked(preds, labels, div_v_t, div_u_t, score_t, reduction='mean'):
+    """
+    CDM loss for action chunking.
+
+    Computes per-action divergence loss for each action in the chunk.
+
+    L_CDM^(k)(θ) = |(∇·u_t^(k) - ∇·v_t^(k)) + (u_t^(k) - v_t^(k))·∇log p_t^(k)|
+
+    Args:
+        preds: Predicted actions [B, chunk_size, ac_dim]
+        labels: Target actions [B, chunk_size, ac_dim]
+        div_v_t: Predicted divergence per action [B, chunk_size]
+        div_u_t: Target divergence per action [B, chunk_size]
+        score_t: Score per action [B, chunk_size, D-1]
+        reduction: 'mean' returns scalar, 'none' returns [B, chunk_size]
+
+    Returns:
+        Per-action CDM loss: [B, chunk_size] if reduction='none', scalar otherwise
+    """
+    dt = 0.05  # 20 Hz control frequency
+
+    # Extract EE pose (excluding gripper command)
+    pred_pose = preds[..., :-1]  # [B, chunk_size, D-1]
+    label_pose = labels[..., :-1]  # [B, chunk_size, D-1]
+
+    # Convert to twist velocities
+    pred_twist = pred_pose / dt  # [B, chunk_size, D-1]
+    label_twist = label_pose / dt  # [B, chunk_size, D-1]
+
+    # TERM 1: Divergence difference per action
+    div_v_t_scaled = div_v_t / dt  # [B, chunk_size]
+    divergence_diff = div_u_t - div_v_t_scaled  # [B, chunk_size]
+
+    # TERM 2: Velocity-score dot product per action
+    velocity_diff = label_twist - pred_twist  # [B, chunk_size, D-1]
+    velocity_score_dot = (velocity_diff * score_t).sum(dim=-1)  # [B, chunk_size]
+
+    # Per-action CDM loss
+    per_action_loss = torch.abs(divergence_diff + velocity_score_dot)  # [B, chunk_size]
+
+    if reduction == 'mean':
+        return per_action_loss.mean()
+    else:  # reduction='none'
+        return per_action_loss
     
 
 def cosine_loss(preds, labels):
