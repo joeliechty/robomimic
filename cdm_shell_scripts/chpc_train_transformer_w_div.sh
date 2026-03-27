@@ -53,7 +53,7 @@ fi
 
 # set action chunk size to 16 for tool, transport, and square, else set to 1 for lift and can
 if [ "$DATASET" = "tool" ] || [ "$DATASET" = "transport" ] || [ "$DATASET" = "square" ]; then
-  ACTION_CHUNK_SIZE=16
+  ACTION_CHUNK_SIZE=100
 else
   ACTION_CHUNK_SIZE=1
 fi
