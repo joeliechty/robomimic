@@ -5,10 +5,17 @@ from robomimic.config import config_factory
 from robomimic.scripts.train import train
 import argparse
 import h5py
+import numpy as np
 
 def sync_all_attributes(source_path, target_path):
+    """Sync HDF5 attributes from the full demo dataset into the feats dataset.
+
+    Always reads from the full demo source so that half/quarter feats files
+    (which are subsets of the full dataset) can look up each of their demos
+    in the source by the same demo key.
+    """
     print(f"Syncing attributes from {source_path} to {target_path}...")
-    
+
     with h5py.File(source_path, 'r') as f_src, h5py.File(target_path, 'a') as f_tgt:
         # 1. Sync global /data attributes (env_args, etc.)
         if "data" in f_src and "data" in f_tgt:
@@ -17,15 +24,41 @@ def sync_all_attributes(source_path, target_path):
             print("  [OK] Global 'data' attributes synced.")
 
         # 2. Sync per-demo attributes (num_samples, model_file, etc.)
-        demos = [k for k in f_src["data"].keys() if k.startswith("demo_")]
-        for demo in demos:
-            if demo in f_tgt["data"]:
+        # Iterate over TARGET demos so half/quarter subsets only process the
+        # demos they actually contain, fetching each from the full source.
+        target_demos = [k for k in f_tgt["data"].keys() if k.startswith("demo_")]
+        synced = 0
+        missing_in_source = 0
+        for demo in target_demos:
+            if demo in f_src["data"]:
                 for k, v in f_src[f"data/{demo}"].attrs.items():
                     f_tgt[f"data/{demo}"].attrs[k] = v
+                synced += 1
             else:
-                print(f"  [Warning] {demo} found in source but not in target. Skipping.")
-        
-        print(f"  [OK] Attributes for {len(demos)} demos synced.")
+                print(f"  [Warning] {demo} found in target but not in source. Skipping.")
+                missing_in_source += 1
+
+        print(f"  [OK] Attributes synced for {synced}/{len(target_demos)} demos."
+              + (f" ({missing_in_source} missing in source)" if missing_in_source else ""))
+
+        # 3. Rebuild /mask filter keys to only include demos present in the target.
+        # The full demo file's mask/train and mask/valid list all demos, but
+        # half/quarter feats files only contain a subset. Prune stale entries so
+        # load_demo_info doesn't try to open non-existent demos.
+        if "mask" in f_src:
+            target_demo_set = set(target_demos)
+            for key_name in f_src["mask"].keys():
+                src_demos_in_mask = [d.decode("utf-8") if isinstance(d, bytes) else d
+                                     for d in f_src[f"mask/{key_name}"][:]]
+                filtered = [d for d in src_demos_in_mask if d in target_demo_set]
+                if f"mask/{key_name}" in f_tgt:
+                    del f_tgt[f"mask/{key_name}"]
+                if "mask" not in f_tgt:
+                    f_tgt.create_group("mask")
+                f_tgt.create_dataset(f"mask/{key_name}",
+                                     data=np.array(filtered, dtype="S"))
+            print(f"  [OK] Filter keys rebuilt: {list(f_src['mask'].keys())} "
+                  f"(filtered to {len(target_demo_set)} target demos)")
 
 # Update these paths to your actual local file locations
 # source = "dataset/square/square_demo.hdf5"
@@ -129,7 +162,10 @@ else:
     raise ValueError(f"Unknown dataset {args.dataset}. Please specify one of 'lift', 'can', 'square', or 'tool'.")
 
 if os.path.exists(source) and os.path.exists(target):
-    sync_all_attributes(source, target)
+    if not args.resume:
+        sync_all_attributes(source, target)
+    else:
+        print("Resuming training — skipping attribute sync (already done on initial run).")
 else:
     print("Check your file paths!")
 

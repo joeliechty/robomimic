@@ -13,10 +13,17 @@ import robomimic.algo.bc as bc
 import argparse
 import robomimic.utils.tensor_utils as TensorUtils
 import h5py
+import numpy as np
 
 def sync_all_attributes(source_path, target_path):
+    """Sync HDF5 attributes from the full demo dataset into the feats dataset.
+
+    Always reads from the full demo source so that half/quarter feats files
+    (which are subsets of the full dataset) can look up each of their demos
+    in the source by the same demo key.
+    """
     print(f"Syncing attributes from {source_path} to {target_path}...")
-    
+
     with h5py.File(source_path, 'r') as f_src, h5py.File(target_path, 'a') as f_tgt:
         # 1. Sync global /data attributes (env_args, etc.)
         if "data" in f_src and "data" in f_tgt:
@@ -25,15 +32,41 @@ def sync_all_attributes(source_path, target_path):
             print("  [OK] Global 'data' attributes synced.")
 
         # 2. Sync per-demo attributes (num_samples, model_file, etc.)
-        demos = [k for k in f_src["data"].keys() if k.startswith("demo_")]
-        for demo in demos:
-            if demo in f_tgt["data"]:
+        # Iterate over TARGET demos so half/quarter subsets only process the
+        # demos they actually contain, fetching each from the full source.
+        target_demos = [k for k in f_tgt["data"].keys() if k.startswith("demo_")]
+        synced = 0
+        missing_in_source = 0
+        for demo in target_demos:
+            if demo in f_src["data"]:
                 for k, v in f_src[f"data/{demo}"].attrs.items():
                     f_tgt[f"data/{demo}"].attrs[k] = v
+                synced += 1
             else:
-                print(f"  [Warning] {demo} found in source but not in target. Skipping.")
-        
-        print(f"  [OK] Attributes for {len(demos)} demos synced.")
+                print(f"  [Warning] {demo} found in target but not in source. Skipping.")
+                missing_in_source += 1
+
+        print(f"  [OK] Attributes synced for {synced}/{len(target_demos)} demos."
+              + (f" ({missing_in_source} missing in source)" if missing_in_source else ""))
+
+        # 3. Rebuild /mask filter keys to only include demos present in the target.
+        # The full demo file's mask/train and mask/valid list all 200 demos, but
+        # half/quarter feats files only contain a subset. Prune stale entries so
+        # load_demo_info doesn't try to open non-existent demos.
+        if "mask" in f_src:
+            target_demo_set = set(target_demos)
+            for key_name in f_src["mask"].keys():
+                src_demos_in_mask = [d.decode("utf-8") if isinstance(d, bytes) else d
+                                     for d in f_src[f"mask/{key_name}"][:]]
+                filtered = [d for d in src_demos_in_mask if d in target_demo_set]
+                if f"mask/{key_name}" in f_tgt:
+                    del f_tgt[f"mask/{key_name}"]
+                if "mask" not in f_tgt:
+                    f_tgt.create_group("mask")
+                f_tgt.create_dataset(f"mask/{key_name}",
+                                     data=np.array(filtered, dtype="S"))
+            print(f"  [OK] Filter keys rebuilt: {list(f_src['mask'].keys())} "
+                  f"(filtered to {len(target_demo_set)} target demos)")
 
 
 # --- Per-job local HDF5 copy (parallel-safe) + cleanup ---
@@ -188,33 +221,10 @@ def parse_args():
         help="set this flag to resume training from latest checkpoint"
     )
     parser.add_argument(
-        "--cdm_patience",
-        type=int,
-        default=100,
-        help="number of epochs with no improvement before halving the CDM weight"
-    )
-    parser.add_argument(
-        "--cdm_decay_factor",
-        type=float,
-        default=0.8,
-        help="factor to multiply CDM weight by when a plateau is detected"
-    )
-    parser.add_argument(
         "--min_cdm_weight",
         type=float,
         default=1e-7,
-        help="minimum CDM weight floor for both plateau decay and cosine schedules"
-    )
-    parser.add_argument(
-        "--cosine_reg_schedule", "-CRS",
-        action='store_true',
-        help="cosine scheduler instead of decay on plateau schecduler for reg weight decay"
-    )
-    parser.add_argument(
-        "--cosine_decay_end",
-        type=int,
-        default=0,
-        help="number of epochs over which to decay the CDM weight (defaults to --epochs if 0)"
+        help="minimum CDM weight at the end of the decay phase"
     )
     parser.add_argument(
         "--seed", "-S",
@@ -548,96 +558,48 @@ if args.use_divergence_loss:
 
     bc.BC_Transformer.log_info = log_info_with_cdm_weight
 
-    if args.cosine_reg_schedule:
-        import math
-        _cosine_initial_weight = args.div_loss_weight
-        _cosine_min_weight = args.min_cdm_weight
-        _cosine_total_epochs = args.cosine_decay_end if args.cosine_decay_end > 0 else args.epochs
+    import math
+    _max_cdm_weight = args.div_loss_weight
+    _min_cdm_weight = args.min_cdm_weight
+    _total_epochs = args.epochs
+    _ramp_end = 0.1 * _total_epochs      # 10% mark
+    _decay_start = 0.8 * _total_epochs    # 80% mark
 
-        _original_on_epoch_end_cos = getattr(bc.BC_Transformer, "on_epoch_end", None)
-
-        def on_epoch_end_with_cosine_schedule(self, epoch):
-            if _original_on_epoch_end_cos is not None:
-                _original_on_epoch_end_cos(self, epoch)
-            # Cosine anneal from initial weight down to min_weight over total_epochs
-            progress = min(epoch / _cosine_total_epochs, 1.0)
-            cosine_weight = _cosine_min_weight + 0.5 * (_cosine_initial_weight - _cosine_min_weight) * (
-                1 + math.cos(math.pi * progress)
+    def _compute_cdm_weight(epoch):
+        if epoch <= _ramp_end:
+            # Linear ramp from 0 to max over first 10%
+            return _max_cdm_weight * (epoch / _ramp_end) if _ramp_end > 0 else _max_cdm_weight
+        elif epoch <= _decay_start:
+            # Hold at max from 10% to 80%
+            return _max_cdm_weight
+        else:
+            # Cosine decay from max to min over 80% to 100%
+            decay_progress = (epoch - _decay_start) / (_total_epochs - _decay_start)
+            return _min_cdm_weight + 0.5 * (_max_cdm_weight - _min_cdm_weight) * (
+                1 + math.cos(math.pi * decay_progress)
             )
+
+    # Weight is set at the start of each epoch's first batch so it is correct
+    # for every epoch — including when resuming (algo_config is not checkpointed).
+    _sched_last_epoch = [-1]
+    _original_train_on_batch_sched = bc.BC_Transformer.train_on_batch
+
+    def train_on_batch_with_cdm_schedule(self, batch, epoch, validate=False):
+        if epoch != _sched_last_epoch[0]:
+            _sched_last_epoch[0] = epoch
+            new_weight = _compute_cdm_weight(epoch)
             with self.algo_config.values_unlocked():
-                self.algo_config.loss.cdm_weight = cosine_weight
+                self.algo_config.loss.cdm_weight = new_weight
             if hasattr(self, "cdm_weight"):
-                self.cdm_weight = cosine_weight
-            print(f"[Epoch {epoch}] Cosine CDM weight: {cosine_weight:.2e} (progress: {progress:.1%})")
+                self.cdm_weight = new_weight
+            phase = "ramp" if epoch <= _ramp_end else ("hold" if epoch <= _decay_start else "decay")
+            print(f"[Epoch {epoch}] CDM weight: {new_weight:.2e} ({phase})")
+        return _original_train_on_batch_sched(self, batch, epoch, validate=validate)
 
-        bc.BC_Transformer.on_epoch_end = on_epoch_end_with_cosine_schedule
-        print(f"Applied BC_Transformer monkey-patch for cosine CDM weight schedule "
-              f"(initial={_cosine_initial_weight:.2e}, min={_cosine_min_weight:.2e}, epochs={_cosine_total_epochs})")
-    else:
-        _original_train_on_batch = bc.BC_Transformer.train_on_batch
-        _original_on_epoch_end = getattr(bc.BC_Transformer, "on_epoch_end", None)
-
-        def train_on_batch_with_loss_tracking(self, batch, epoch, validate=False):
-            info = _original_train_on_batch(self, batch, epoch, validate=validate)
-            # Only aggregate the loss if validate==True so the scheduler reacts to
-            # generalization performance, not training memorization.
-            if validate:
-                if not hasattr(self, "_cdm_epoch_loss_sum"):
-                    self._cdm_epoch_loss_sum = 0.0
-                    self._cdm_epoch_batches = 0
-                loss_val = info.get("Loss", 0.0)
-                if isinstance(loss_val, torch.Tensor):
-                    loss_val = loss_val.item()
-                self._cdm_epoch_loss_sum += loss_val
-                self._cdm_epoch_batches += 1
-            return info
-
-        def on_epoch_end_with_cdm_decay(self, epoch):
-            if _original_on_epoch_end is not None:
-                _original_on_epoch_end(self, epoch)
-
-            if not hasattr(self, "_cdm_epoch_loss_sum") or self._cdm_epoch_batches == 0:
-                return
-
-            avg_loss = self._cdm_epoch_loss_sum / self._cdm_epoch_batches
-            self._cdm_epoch_loss_sum = 0.0
-            self._cdm_epoch_batches = 0
-
-            if not hasattr(self, "_cdm_best_loss"):
-                self._cdm_best_loss = float("inf")
-                self._cdm_patience_counter = 0
-
-            if avg_loss < self._cdm_best_loss - 1e-6:
-                self._cdm_best_loss = avg_loss
-                self._cdm_patience_counter = 0
-            else:
-                self._cdm_patience_counter += 1
-                print(f"[Epoch {epoch}] No validation loss improvement ({avg_loss:.6f} >= best {self._cdm_best_loss:.6f}). "
-                      f"CDM plateau counter: {self._cdm_patience_counter}/{args.cdm_patience}")
-
-            if self._cdm_patience_counter >= args.cdm_patience:
-                current_weight = self.algo_config.loss.cdm_weight
-                min_weight = args.min_cdm_weight
-
-                if current_weight > min_weight:
-                    new_weight = max(current_weight * args.cdm_decay_factor, min_weight)
-                    print(f"[Epoch {epoch}] Plateau detected — decaying CDM weight: {current_weight:.2e} -> {new_weight:.2e}")
-                    with self.algo_config.values_unlocked():
-                        self.algo_config.loss.cdm_weight = new_weight
-                    if hasattr(self, "cdm_weight"):
-                        self.cdm_weight = new_weight
-                    # Reset both counter and best loss so the model can adjust to the
-                    # new regularization landscape before triggering another decay.
-                    self._cdm_patience_counter = 0
-                    self._cdm_best_loss = float("inf")
-                else:
-                    print(f"[Epoch {epoch}] Plateau detected, but CDM weight is already at the minimum floor ({min_weight:.2e}).")
-                    self._cdm_patience_counter = 0
-
-        bc.BC_Transformer.train_on_batch = train_on_batch_with_loss_tracking
-        bc.BC_Transformer.on_epoch_end = on_epoch_end_with_cdm_decay
-        print(f"Applied BC_Transformer monkey-patch for CDM weight decay on plateau "
-              f"(patience={args.cdm_patience}, decay_factor={args.cdm_decay_factor}, min_weight={args.min_cdm_weight:.2e})")
+    bc.BC_Transformer.train_on_batch = train_on_batch_with_cdm_schedule
+    print(f"Applied CDM weight schedule: ramp 0→{_max_cdm_weight:.2e} (epochs 0-{_ramp_end:.0f}), "
+          f"hold (epochs {_ramp_end:.0f}-{_decay_start:.0f}), "
+          f"cosine decay→{_min_cdm_weight:.2e} (epochs {_decay_start:.0f}-{_total_epochs})")
 # -----------------------------------------------------
 
 if args.end_to_end_image_training:
@@ -687,9 +649,15 @@ if os.path.exists(source) and os.path.exists(target):
             ) from e
         dataset_path = local_target
         register_local_dataset_cleanup(local_target, args.keep_local_copy)
-        sync_all_attributes(source, local_target)
+        if not args.resume:
+            sync_all_attributes(source, local_target)
+        else:
+            print("Resuming training — skipping attribute sync (already done on initial run).")
     else:
-        sync_all_attributes(source, target)
+        if not args.resume:
+            sync_all_attributes(source, target)
+        else:
+            print("Resuming training — skipping attribute sync (already done on initial run).")
 else:
     print("Check your file paths!")
 
@@ -827,10 +795,11 @@ with config.values_unlocked():
     config.experiment.save.every_n_epochs = args.save_freq
     
     # Set experiment name with dataset portion, epochs, and save frequency
-    if args.cosine_reg_schedule:
-        decay_type = f"cosine_max{cdm_weight}_min{args.min_cdm_weight}"
+    if args.use_divergence_loss:
+        decay_type = f"ramp_hold_cosine_max{cdm_weight}_min{args.min_cdm_weight}"
     else:
-        decay_type = f"plateau_max{cdm_weight}_min{args.min_cdm_weight}_pat{args.cdm_patience}_decay{args.cdm_decay_factor}"
+        decay_type = "no_cdm"
+
     # Set random seed
     if args.seed is not None:
         config.train.seed = args.seed

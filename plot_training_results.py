@@ -22,6 +22,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import matplotlib.lines as mlines
 import numpy as np
 
 # ─── Configuration ──────────────────────────────────────────────────────────────
@@ -34,6 +35,9 @@ OUTPUT_DIR = pathlib.Path(
 )
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Set to True to shade ±1 std region around the mean for multi-seed groups
+PLOT_STD = False
+
 # ─── Helpers ────────────────────────────────────────────────────────────────────
 
 # Matches:  Train Epoch 42
@@ -44,8 +48,21 @@ _RE_VAL_EPOCH = re.compile(r"^Validation Epoch (\d+)\s*$", re.MULTILINE)
 _RE_ROLLOUT_EPOCH = re.compile(r"^Epoch (\d+) Rollouts took", re.MULTILINE)
 # JSON block (greedy from first { to matching })
 _RE_JSON_BLOCK = re.compile(r"\{[^{}]*\}", re.DOTALL)
-# Strips _seedN suffix to get the base config name for grouping
-_RE_SEED_SUFFIX = re.compile(r"_seed\d+$")
+# Strips _seedN (and optional _? separator) from config name, keeping chunkN suffix.
+# Handles both "..._seed1chunk10" and "..._seed1_chunk10".
+_RE_SEED_SUFFIX = re.compile(r"_seed\d+_?(chunk\d+)?$")
+
+
+def _strip_seed(name: str) -> str:
+    """Remove the _seedN part from a config name, keeping any trailing chunkN."""
+    m = _RE_SEED_SUFFIX.search(name)
+    if m is None:
+        return name
+    chunk = m.group(1)          # e.g. "chunk10" or None
+    base = name[:m.start()]
+    if chunk:
+        base = base + "_" + chunk
+    return base
 
 
 def _find_json_after(text: str, pos: int) -> dict | None:
@@ -186,7 +203,7 @@ def discover_runs(results_root: pathlib.Path) -> list[RunInfo]:
                     .replace("transformer_divergence", "transformer_CDM")
                     .replace("diffusion_policy", "diffusion")
                 )
-                base_config = _RE_SEED_SUFFIX.sub("", config_dir.name)
+                base_config = _strip_seed(config_dir.name)
                 label = f"{short_model}/{task}/{base_config}"
                 runs.append(RunInfo(model_type, task, config_dir.name, base_config, log_path, label))
 
@@ -196,22 +213,26 @@ def discover_runs(results_root: pathlib.Path) -> list[RunInfo]:
 # ─── Plotting ───────────────────────────────────────────────────────────────────
 
 # Each entry: (title, use_log_scale, series_list)
-# series_list items: (val_key, epoch_key, linestyle, label_suffix)
-# label_suffix is appended to the run label; use "" for single-series subplots.
+# series_list items: (val_key, epoch_key, label_suffix)
+# Linestyle is now determined per-group by model type (see _model_style).
 METRICS = [
-    ("Train CDM & L2 Loss", True, [
-        ("cdm_loss", "epochs", "--", " (CDM)"),
-        ("l2_loss",  "epochs", "-",  " (L2)"),
-    ]),
-    ("Val CDM & L2 Loss", True, [
-        ("val_cdm_loss", "val_epochs", "--", " (CDM)"),
-        ("val_l2_loss",  "val_epochs", "-",  " (L2)"),
-    ]),
-    ("Train Total Loss", True,  [("total_loss",     "epochs",         "-", "")]),
-    ("Val Total Loss",   True,  [("val_total_loss",  "val_epochs",     "-", "")]),
-    ("CDM Weight",       True,  [("cdm_weight",      "epochs",         "-", "")]),
-    ("Success Rate",     False, [("success_rates",   "rollout_epochs", "-", "")]),
+    ("Train CDM Loss",   True,  [("cdm_loss",       "epochs",         "")]),
+    ("Train L2 Loss",    True,  [("l2_loss",         "epochs",         "")]),
+    ("Val CDM Loss",     True,  [("val_cdm_loss",    "val_epochs",     "")]),
+    ("Val L2 Loss",      True,  [("val_l2_loss",     "val_epochs",     "")]),
+    ("Train Total Loss", True,  [("total_loss",      "epochs",         "")]),
+    ("Val Total Loss",   True,  [("val_total_loss",  "val_epochs",     "")]),
+    ("CDM Weight",       True,  [("cdm_weight",      "epochs",         "")]),
+    ("Success Rate",     False, [("success_rates",   "rollout_epochs", "")]),
 ]
+
+def _is_diffusion(model_type: str) -> bool:
+    return "diffusion" in model_type.lower()
+
+
+def _model_style(model_type: str) -> str:
+    """Return linestyle: dashed for NoCDM transformer, solid for everything else."""
+    return "--" if "no_divergence" in model_type else "-"
 
 
 def _values_present(data: dict, val_key: str) -> bool:
@@ -227,14 +248,53 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
     """
 
     # ── Group by (model_type, base_config_name) ──────────────────────────────
-    GroupEntry = collections.namedtuple("GroupEntry", ["label", "data_list"])
+    GroupEntry = collections.namedtuple(
+        "GroupEntry", ["label", "model_type", "base_config_name", "data_list"]
+    )
     groups: dict[tuple, GroupEntry] = {}
     for run_info, data in runs:
         key = (run_info.model_type, run_info.base_config_name)
         if key not in groups:
-            groups[key] = GroupEntry(label=run_info.label, data_list=[])
+            groups[key] = GroupEntry(
+                label=run_info.label,
+                model_type=run_info.model_type,
+                base_config_name=run_info.base_config_name,
+                data_list=[],
+            )
         groups[key].data_list.append(data)
     group_list = list(groups.values())
+
+    # ── Color assignment: one color per dataset (transformers only) ──────────
+    # CDM and NoCDM for the same dataset share the same color, keyed on the
+    # dataset identifier prefix (e.g. "Q1", "H1", "F") extracted from the
+    # config name. This is invariant across CDM/NoCDM which encode different
+    # hyperparameter strings in their config directory names.
+    # Diffusion always gets solid black.
+    def _dataset_key(base_config_name: str) -> str:
+        """Return a color-grouping key combining dataset prefix and chunk size.
+
+        Dataset prefix is the first ALL_CAPS+optional-digits token (Q1, H1, F, …).
+        Chunk size comes from a trailing chunkN token; absence means chunk1.
+        """
+        dataset = None
+        for part in base_config_name.split("_"):
+            if re.match(r"^[A-Z]\d*$", part):
+                dataset = part
+                break
+        chunk_m = re.search(r"chunk(\d+)$", base_config_name, re.IGNORECASE)
+        chunk = f"chunk{chunk_m.group(1)}" if chunk_m else "chunk1"
+        return f"{dataset or base_config_name}_{chunk}"
+
+    seen_ds: list[str] = []
+    seen_ds_set: set[str] = set()
+    for g in group_list:
+        if not _is_diffusion(g.model_type):
+            key = _dataset_key(g.base_config_name)
+            if key not in seen_ds_set:
+                seen_ds_set.add(key)
+                seen_ds.append(key)
+    _palette = cm.tab10(np.linspace(0, 0.9, max(len(seen_ds), 1)))
+    ds_color = {ds: _palette[i] for i, ds in enumerate(seen_ds)}
 
     # Decide which metrics are non-empty across all groups for this task
     active_metrics = []
@@ -243,7 +303,7 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
             if any(
                 _values_present(d, vk)
                 for d in group.data_list
-                for vk, _, _, _ in series_list
+                for vk, _, _ in series_list
             ):
                 active_metrics.append((title, log_scale, series_list))
                 break
@@ -264,11 +324,17 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
     for i in range(n_metrics, len(axes_flat)):
         axes_flat[i].set_visible(False)
 
-    colors = cm.tab10(np.linspace(0, 1, max(len(group_list), 1)))
-
     for ax, (metric_name, log_scale, series_list) in zip(axes_flat, active_metrics):
-        for group, color in zip(group_list, colors):
-            for val_key, epoch_key, linestyle, suffix in series_list:
+        for group in group_list:
+            # ── Per-group style ───────────────────────────────────────────────
+            if _is_diffusion(group.model_type):
+                color     = "black"
+                linestyle = "-"
+            else:
+                color     = ds_color.get(_dataset_key(group.base_config_name), "gray")
+                linestyle = _model_style(group.model_type)
+
+            for val_key, epoch_key, suffix in series_list:
                 # Collect non-None (x, y) pairs from every seed in this group
                 all_series = []
                 for data in group.data_list:
@@ -317,16 +383,17 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
                         color=color, linestyle=linestyle, linewidth=1.5,
                     )
                     # Shade ±1 std only where >1 seed contributed
-                    multi_mask = counts > 1
-                    if multi_mask.any():
-                        shaded_means = np.where(multi_mask, means, np.nan)
-                        shaded_stds  = np.where(multi_mask, stds,  np.nan)
-                        ax.fill_between(
-                            all_xs,
-                            shaded_means - shaded_stds,
-                            shaded_means + shaded_stds,
-                            color=color, alpha=0.2,
-                        )
+                    if PLOT_STD:
+                        multi_mask = counts > 1
+                        if multi_mask.any():
+                            shaded_means = np.where(multi_mask, means, np.nan)
+                            shaded_stds  = np.where(multi_mask, stds,  np.nan)
+                            ax.fill_between(
+                                all_xs,
+                                shaded_means - shaded_stds,
+                                shaded_means + shaded_stds,
+                                color=color, alpha=0.2,
+                            )
 
         ax.set_title(metric_name)
         ax.set_xlabel("Epoch")
@@ -334,15 +401,32 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
             ax.set_yscale("log")
         ax.grid(True, alpha=0.3)
 
-    # Single shared legend below all subplots
-    handles, labels = axes_flat[0].get_legend_handles_labels()
-    # Collect from all axes in case some only appear in later subplots
-    for ax in axes_flat[1:n_metrics]:
-        h, l = ax.get_legend_handles_labels()
-        for hh, ll in zip(h, l):
-            if ll not in labels:
-                handles.append(hh)
-                labels.append(ll)
+    # Single shared legend below all subplots — one entry per experiment group,
+    # preserving the actual linestyle (solid=CDM, dashed=NoCDM, black=diffusion).
+    def _clean_label(lbl: str) -> str:
+        lbl = re.sub(r" \(n=\d+ seeds\)", "", lbl)
+        return lbl
+
+    handles, labels = [], []
+    seen = set()
+    for ax in axes_flat[:n_metrics]:
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            clean = _clean_label(l)
+            if clean not in seen:
+                seen.add(clean)
+                styled_h = mlines.Line2D([], [], color=h.get_color(),
+                                         linestyle=h.get_linestyle(),
+                                         linewidth=h.get_linewidth())
+                handles.append(styled_h)
+                labels.append(clean)
+
+    # Append linestyle-meaning indicators as a visual key
+    handles += [
+        mlines.Line2D([], [], color="gray", linestyle="-",  linewidth=1.5, label="CDM model"),
+        mlines.Line2D([], [], color="gray", linestyle="--", linewidth=1.5, label="NoCDM model"),
+        mlines.Line2D([], [], color="black", linestyle="-", linewidth=1.5, label="Diffusion"),
+    ]
+    labels += ["CDM model", "NoCDM model", "Diffusion"]
     
     # set the rollout success rate y axis to be between 0 and 1
     for ax, (metric_name, _, _) in zip(axes_flat, active_metrics):

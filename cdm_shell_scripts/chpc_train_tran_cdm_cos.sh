@@ -20,24 +20,14 @@ PORTION_ID=$3
 EPOCHS=$4
 SAVE_FREQ=$5
 BATCH_SIZE=$6
-CDM_LOSS_WEIGHT=$7
-PATIENCE=$8
-DECAY_FACTOR=$9
-COSINE_REG_SCHEDULE=${10:-False}
-RESUME=${11:-False}
-COSINE_DECAY_END=${12:-0}
-MIN_CDM_WEIGHT=${13:-0.0000001}
-SEED=${14:-}
+MAX_CDM_WEIGHT=$7
+MIN_CDM_WEIGHT=${8:-0.0000001}
+RESUME=${9:-False}
+SEED=${10:-}
 
 
-if [ -z "$CDM_LOSS_WEIGHT" ]; then
-  CDM_LOSS_WEIGHT=0.001
-fi
-
-if [ "$COSINE_REG_SCHEDULE" = "True" ]; then
-  COSINE_REG_ARG="-CRS"
-else
-  COSINE_REG_ARG=""
+if [ -z "$MAX_CDM_WEIGHT" ]; then
+  MAX_CDM_WEIGHT=0.001
 fi
 
 if [ "$RESUME" = "True" ]; then
@@ -64,10 +54,10 @@ IMAGE_PATH="/scratch/general/vast/$USER/robomimic.sif"
 # Load Apptainer module
 module load apptainer
 
-echo "Launching Transformer CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}, CDM loss weight: ${CDM_LOSS_WEIGHT}, batch size: ${BATCH_SIZE}, patience: ${PATIENCE}, decay factor: ${DECAY_FACTOR}, cosine reg schedule: ${COSINE_REG_SCHEDULE}, resume: ${RESUME}, cosine decay end: ${COSINE_DECAY_END}, min CDM weight: ${MIN_CDM_WEIGHT}, seed: ${SEED}, action chunk size: ${ACTION_CHUNK_SIZE}"
+echo "Launching Transformer CDM job for ${DATASET} with portion: ${PORTION}, epochs: ${EPOCHS}, save frequency: ${SAVE_FREQ}, CDM loss weight: ${MAX_CDM_WEIGHT}, batch size: ${BATCH_SIZE}, resume: ${RESUME}, min CDM weight: ${MIN_CDM_WEIGHT}, seed: ${SEED}, action chunk size: ${ACTION_CHUNK_SIZE}"
 echo "Start time: $(date)"
 
-FUNC_ARGS="-D ${DATASET} -CDM -L ${CDM_LOSS_WEIGHT} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V --cdm_patience ${PATIENCE} --cdm_decay_factor ${DECAY_FACTOR} ${COSINE_REG_ARG} ${SEED_ARG} ${RESUME_FLAG} --cosine_decay_end ${COSINE_DECAY_END} --min_cdm_weight ${MIN_CDM_WEIGHT} -ACS ${ACTION_CHUNK_SIZE}"
+FUNC_ARGS="-D ${DATASET} -CDM -L ${MAX_CDM_WEIGHT} -DP ${PORTION} -PI ${PORTION_ID} -E ${EPOCHS} -SF ${SAVE_FREQ} -E2E -B ${BATCH_SIZE} -V ${SEED_ARG} ${RESUME_FLAG} --min_cdm_weight ${MIN_CDM_WEIGHT} -ACS ${ACTION_CHUNK_SIZE}"
 
 # Launch Transformer WITH Divergence (-CDM flag)
 apptainer exec \
