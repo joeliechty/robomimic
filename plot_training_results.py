@@ -84,6 +84,7 @@ def parse_log(log_path: pathlib.Path) -> dict:
       l2_loss        – list of float | None
       total_loss     – list of float | None
       cdm_weight     – list of float | None
+      learning_rate  – list of float | None
       val_epochs     – list of int
       val_cdm_loss   – list of float | None
       val_l2_loss    – list of float | None
@@ -93,7 +94,7 @@ def parse_log(log_path: pathlib.Path) -> dict:
     """
     text = log_path.read_text(errors="replace")
 
-    epochs, cdm_loss, l2_loss, total_loss, cdm_weight = [], [], [], [], []
+    epochs, cdm_loss, l2_loss, total_loss, cdm_weight, learning_rate = [], [], [], [], [], []
 
     for m in _RE_TRAIN_EPOCH.finditer(text):
         epoch = int(m.group(1))
@@ -105,6 +106,7 @@ def parse_log(log_path: pathlib.Path) -> dict:
         l2_loss.append(data.get("L2_Loss"))
         total_loss.append(data.get("Loss"))
         cdm_weight.append(data.get("CDM_Weight"))
+        learning_rate.append(data.get("Optimizer/policy0_lr"))
 
     val_epochs, val_cdm_loss, val_l2_loss, val_total_loss = [], [], [], []
 
@@ -137,6 +139,7 @@ def parse_log(log_path: pathlib.Path) -> dict:
         l2_loss=l2_loss,
         total_loss=total_loss,
         cdm_weight=cdm_weight,
+        learning_rate=learning_rate,
         val_epochs=val_epochs,
         val_cdm_loss=val_cdm_loss,
         val_l2_loss=val_l2_loss,
@@ -223,6 +226,7 @@ METRICS = [
     ("Train Total Loss", True,  [("total_loss",      "epochs",         "")]),
     ("Val Total Loss",   True,  [("val_total_loss",  "val_epochs",     "")]),
     ("CDM Weight",       True,  [("cdm_weight",      "epochs",         "")]),
+    ("Learning Rate",    True,  [("learning_rate",   "epochs",         "")]),
     ("Success Rate",     False, [("success_rates",   "rollout_epochs", "")]),
 ]
 
@@ -447,7 +451,7 @@ def plot_task(task: str, runs: list[tuple[RunInfo, dict]], out_dir: pathlib.Path
     fig.tight_layout()
 
     out_path = out_dir / f"{task}_training_metrics.png"
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved → {out_path}")
 
@@ -462,13 +466,13 @@ def main():
     # Parse all logs
     parsed: list[tuple[RunInfo, dict]] = []
     for run_info in runs:
-        print(f"  Parsing: {run_info.label}")
+        # print(f"  Parsing: {run_info.label}")
         data = parse_log(run_info.log_path)
-        print(
-            f"    epochs={len(data['epochs'])}, "
-            f"rollout_epochs={data['rollout_epochs']}, "
-            f"success_rates={data['success_rates']}"
-        )
+        # print(
+        #     f"    epochs={len(data['epochs'])}, "
+        #     f"rollout_epochs={data['rollout_epochs']}, "
+        #     f"success_rates={data['success_rates']}"
+        # )
         parsed.append((run_info, data))
 
     # Group by task

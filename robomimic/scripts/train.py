@@ -301,6 +301,15 @@ def train(config, device, resume=False):
         best_valid_loss = variable_state["best_valid_loss"]
         best_return = variable_state["best_return"]
         best_success_rate = variable_state["best_success_rate"]
+        # Reconcile best_return/best_success_rate with current env keys.
+        # The checkpoint may have been saved with different env keys (e.g. different
+        # dataset filename on another cluster), so ensure all current keys exist.
+        if best_return is not None:
+            for k in envs:
+                if k not in best_return:
+                    best_return[k] = -np.inf
+                if k not in best_success_rate:
+                    best_success_rate[k] = -1.
         print("*" * 50)
         print("resuming training from epoch {}".format(start_epoch))
         print("*" * 50)

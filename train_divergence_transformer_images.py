@@ -130,12 +130,20 @@ def get_local_copy_base_dir(args):
 
 
 def make_unique_local_dataset_path(shared_target, copy_dir):
-    """Unique filename under copy_dir to avoid collisions across array tasks / PIDs."""
+    """Stable filename under copy_dir, unique per array task if applicable.
+
+    Uses SLURM_ARRAY_TASK_ID (stable across re-submissions of the same task)
+    for uniqueness in array jobs. For non-array jobs, the copy_dir itself is
+    already unique per job (SLURM_TMPDIR or /scratch/local/$USER/$JOB_ID),
+    so no extra suffix is needed. This keeps env_key consistent across resume.
+    """
     base = os.path.basename(shared_target)
     stem, ext = os.path.splitext(base)
-    job_id = os.environ.get("SLURM_JOB_ID", "local")
-    pid = os.getpid()
-    uniq = f"{stem}_job{job_id}_pid{pid}{ext}"
+    task_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+    if task_id is not None:
+        uniq = f"{stem}_task{task_id}{ext}"
+    else:
+        uniq = f"{stem}_local{ext}"
     return os.path.join(copy_dir, uniq)
 
 
@@ -649,15 +657,9 @@ if os.path.exists(source) and os.path.exists(target):
             ) from e
         dataset_path = local_target
         register_local_dataset_cleanup(local_target, args.keep_local_copy)
-        if not args.resume:
-            sync_all_attributes(source, local_target)
-        else:
-            print("Resuming training — skipping attribute sync (already done on initial run).")
+        sync_all_attributes(source, local_target)
     else:
-        if not args.resume:
-            sync_all_attributes(source, target)
-        else:
-            print("Resuming training — skipping attribute sync (already done on initial run).")
+        sync_all_attributes(source, target)
 else:
     print("Check your file paths!")
 
